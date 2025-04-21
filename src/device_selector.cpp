@@ -7,7 +7,6 @@
 #include <string>
 #include <sys/stat.h>
 
-
 float getLocalMemoryGB() {
     std::ifstream meminfo("/proc/meminfo");
     std::string line;
@@ -86,17 +85,21 @@ std::vector<DeviceInfo> select_devices_incrementally(const std::vector<DeviceInf
     return selected;
 }
 
-float estimate_required_memory(const LlmHeader& header) {
-    float bytesPerParam = (header.weightType == F_Q80) ? 4.0f : 2.0f; // Q80 takes more bytes
-    float totalBytes = header.nParams * bytesPerParam;
-    float overheadFactor = 1.5f;  // buffer, kv-cache, pipes, etc.
-    return (totalBytes * overheadFactor) / (1024.0f * 1024.0f * 1024.0f);
-}
-
 float estimate_required_memory(const char* modelPath) {
     try {
         LlmHeader header = loadLlmHeader(modelPath, 0, F_Q40);  // fallback to default float type
-        return estimate_required_memory(header);
+
+        // Fallback estimate using known structure without relying on nParams
+        float estimatedParams = static_cast<float>(
+            (header.dim * header.nLayers * 12) +
+            (header.vocabSize * header.dim) +
+            (header.hiddenDim * header.dim * 2)
+        );
+
+        float bytesPerParam = (header.weightType == F_Q80) ? 4.0f : 2.0f;
+        float totalBytes = estimatedParams * bytesPerParam;
+        float overheadFactor = 1.5f;
+        return (totalBytes * overheadFactor) / (1024.0f * 1024.0f * 1024.0f);
     } catch (...) {
         struct stat st;
         if (stat(modelPath, &st) == 0) {
