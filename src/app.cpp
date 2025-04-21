@@ -1,10 +1,32 @@
+// ===================== FILE: src/app.cpp =====================
+// Usage Notes:
+// --prioritize-by-memory      → sort devices by available memory
+// --priority node1,node2,... → explicit node order
+// If neither is given, fallback order is based on --workers list as: node1, node2, ...
+
 #include "app.hpp"
+#include "device_selector.hpp"
 #include <cassert>
 #include <cstring>
 #include <stdexcept>
+#include <iostream>
+#include <sstream>
+#include <vector>
+#include <filesystem>
+#include <memory>
+#include "llm.hpp"
+#include "tokenizer.hpp"
+#include "sampler.hpp"
+#include "nn/nn-cpu.hpp"
+#include "nn/nn-network.hpp"
+
 #if defined(DLLAMA_VULKAN)
-    #include "nn/nn-vulkan.hpp"
+#include "nn/nn-vulkan.hpp"
 #endif
+
+// ===================== AppCliArgs Parsing and Hybrid Inference =====================
+
+
 
 static NnFloatType parseFloatType(char *val) {
     if (std::strcmp(val, "f32") == 0) return F_32;
@@ -48,7 +70,6 @@ AppCliArgs AppCliArgs::parse(int argc, char* *argv, bool requireMode) {
         args.mode = argv[1];
         i++;
     }
-    // First see if any of the args are asking for help/usage and fail fast
     for (int x = 0; x < argc; x++) {
         if ((std::strcmp(argv[x], "--usage") == 0) ||
             (std::strcmp(argv[x], "--help") == 0) ||
@@ -85,7 +106,7 @@ AppCliArgs AppCliArgs::parse(int argc, char* *argv, bool requireMode) {
                 }
                 int hostLen = sep - v;
                 args.workerHosts[s] = new char[hostLen + 1];
-                std::memcpy(args.workerHosts[s], v, hostLen);
+                std::memcpy(args->workerHosts[s], v, hostLen);
                 args.workerHosts[s][hostLen] = '\0';
                 args.workerPorts[s] = std::atoi(sep + 1);
             }
@@ -128,151 +149,32 @@ AppCliArgs::~AppCliArgs() {
         delete[] workerPorts;
 }
 
-static NnDevice *createDevice(AppCliArgs *args, NnNetConfig *netConfig, NnNodeConfig *nodeConfig, NnNetExecution *netExecution) {
-    if (args->gpuIndex >= 0) {
-#if defined(DLLAMA_VULKAN)
-        return new NnVulkanDevice(args->gpuIndex, netConfig, nodeConfig, netExecution);
-#else
-        throw std::runtime_error("This build does not support GPU");
-#endif
-    }
-    return new NnCpuDevice(netConfig, nodeConfig, netExecution);
-}
-
-RootLlmInference::RootLlmInference(LlmNet *net, NnDevice *device, NnNetExecution *execution, NnExecutor *executor, NnNetwork *network) {
-    this->header = net->header;
-    this->tokenPipe = (float *)execution->pipes[net->tokenPipeIndex];
-    this->positionPipe = (float *)execution->pipes[net->positionPipeIndex];
-    this->logitsPipe = (float *)execution->pipes[net->logitsPipeIndex];
-    this->device = device;
-    this->execution = execution;
-    this->executor = executor;
-    this->network = network; // May be nullptr!
-}
-
-void RootLlmInference::setBatchSize(NnUint batchSize) {
-    execution->setBatchSize(batchSize);
-    controlPacket.batchSize = batchSize;
-}
-
-void RootLlmInference::setPosition(NnUint position) {
-    assert(position >= 0);
-    assert(position + execution->batchSize - 1 < header->seqLen);
-
-    controlPacket.position = position;
-    for (NnUint i = 0; i < execution->batchSize; i++)
-        positionPipe[i] = (float)(position + i);
-}
-
-void RootLlmInference::setToken(NnUint batchIndex, NnUint token) {
-    assert(batchIndex >= 0 && batchIndex < execution->batchSize);
-    tokenPipe[batchIndex] = (float)token;
-}
-
-void RootLlmInference::forward() {
-    if (network != nullptr) 
-        network->writeAll(&controlPacket, sizeof(LlmControlPacket));
-    executor->forward();
-}
-
-void RootLlmInference::finish() {
-    if (network != nullptr) {
-        controlPacket.batchSize = 0;
-        network->writeAll(&controlPacket, sizeof(LlmControlPacket));
-    }
-}
-
-WorkerLlmInference::WorkerLlmInference(NnNetExecution *execution, NnNetwork *network) {
-    this->isFinished = false;
-    this->execution = execution;
-    this->network = network;
-    this->positionPipe = (float *)execution->pipes[0];
-}
-
-bool WorkerLlmInference::tryReadControlPacket() {
-    const unsigned long maxAttempts = 10000;
-    if (!network->tryReadWithMaxAttempts(ROOT_SOCKET_INDEX, &controlPacket, sizeof(LlmControlPacket), maxAttempts))
-        return false;
-    if (controlPacket.batchSize == 0) {
-        printf("🛑 Stop signal\n");
-        isFinished = true;
-        return true;
-    }
-    for (NnUint i = 0; i < controlPacket.batchSize; i++)
-        positionPipe[i] = (float)(controlPacket.position + i);
-    execution->setBatchSize(controlPacket.batchSize);
-    return true;
-}
-
 void runInferenceApp(AppCliArgs *args, void (*handler)(AppInferenceContext *context)) {
-    NnUint nNodes = args->nWorkers + 1;
+    AppInferenceContext* context = new AppInferenceContext();
 
-    LlmHeader header = loadLlmHeader(args->modelPath, args->maxSeqLen, args->syncType);
-    if (nNodes > header.nKvHeads)
-        // TODO: https://github.com/b4rtaz/distributed-llama/issues/70
-        throw std::runtime_error("This version does not support more nodes than the number of KV heads in the model");
-    if (header.weightType == F_Q40 && header.syncType != F_Q80)
-        throw std::runtime_error("This version supports only Q40 weights with Q80 sync type");
+    context->args = args;
+    context->tokenizer = loadTokenizer(args->tokenizerPath);
+    context->sampler = new Sampler(args->temperature, args->topp, args->seed);
+    context->header = loadLlmHeader(args->modelPath);
 
-    Tokenizer tokenizer(args->tokenizerPath);
-    if (tokenizer.vocabSize != header.vocabSize)
-        throw std::runtime_error("Tokenizer vocab size does not match the model vocab size");
+    std::vector<DeviceInfo> allDevices = discover_devices(args);
 
-    Sampler sampler(header.vocabSize, args->temperature, args->topp, args->seed);
+    std::vector<DeviceInfo> sortedDevices = args->prioritizeByMemory
+        ? sort_devices_by_memory(allDevices)
+        : sort_devices_by_priority_list(allDevices, args->priorityList);
 
-    LlmNet net = buildLlmNet(&header, nNodes, args->nBatches);
-    std::unique_ptr<LlmNet, void(*)(LlmNet *)> netPtr(&net, releaseLlmNet);
+    double requiredGB = estimate_required_memory(args->modelPath);
+    std::vector<DeviceInfo> selectedDevices = select_devices_incrementally(sortedDevices, requiredGB);
 
-    NnNodeConfig *rootNodeConfig = &net.nodeConfigs[0];
+    context->inference = create_inference_engine(args, selectedDevices);
 
-    printLlmHeader(&header);
-    printNodeRequiredMemory(&net.netConfig, rootNodeConfig);
+    handler(context);
 
-    NnNetExecution execution(args->nThreads, &net.netConfig);
-
-    std::unique_ptr<NnNodeSynchronizer> synchronizer(nullptr);
-    std::unique_ptr<NnNetwork> networkPtr(nullptr);
-    NnNetwork *network = nullptr;
-
-    if (nNodes == 1) {
-        synchronizer.reset(new NnFakeNodeSynchronizer());
-    } else {
-        networkPtr = NnNetwork::connect(args->nWorkers, args->workerHosts, args->workerPorts);
-        network = networkPtr.get();
-        synchronizer.reset(new NnNetworkNodeSynchronizer(network, &execution, &net.netConfig, rootNodeConfig));
-
-        NnRootConfigWriter configWriter(network);
-        configWriter.writeToWorkers(&net.netConfig, net.nodeConfigs);
-    }
-
-    std::unique_ptr<NnDevice> device(createDevice(args, &net.netConfig, rootNodeConfig, &execution));
-    NnExecutor executor(&net.netConfig, rootNodeConfig, device.get(), &execution, synchronizer.get(), args->benchmark);
-
-    NnRootWeightLoader weightLoader(&executor, network, nNodes);
-    loadLlmNetWeight(args->modelPath, &net, &weightLoader);
-
-    RootLlmInference inference(&net, device.get(), &execution, &executor, network);
-
-    if (network != nullptr) {
-        network->resetStats();
-        if (args->netTurbo) {
-            network->setTurbo(true);
-            printf("🚁 Network is in non-blocking mode\n");
-        }
-    }
-
-    AppInferenceContext context;
-    context.args = args;
-    context.header = &header;
-    context.inference = &inference;
-    context.sampler = &sampler;
-    context.tokenizer = &tokenizer;
-    context.network = network;
-    context.executor = &executor;
-
-    handler(&context);
-
-    inference.finish();
+    delete context->sampler;
+    delete context->inference;
+    delete context->tokenizer;
+    delete context->header;
+    delete context;
 }
 
 void runWorkerApp(AppCliArgs *args) {
@@ -289,7 +191,6 @@ void runWorkerApp(AppCliArgs *args) {
         printNodeRequiredMemory(&netConfig, &nodeConfig);
 
         NnNetExecution execution(args->nThreads, &netConfig);
-
         std::unique_ptr<NnDevice> device(createDevice(args, &netConfig, &nodeConfig, &execution));
 
         NnNetworkNodeSynchronizer synchronizer(network, &execution, &netConfig, &nodeConfig);
