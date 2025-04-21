@@ -90,12 +90,13 @@ public:
 typedef struct {
     AppCliArgs *args;
     LlmHeader *header;
-    RootLlmInference *inference;
+    Inference *inference;  // ✅ now accepts both RootLlmInference and future types
     Tokenizer *tokenizer;
     Sampler *sampler;
     NnNetwork *network;
     NnExecutor *executor;
 } AppInferenceContext;
+
 
 void runInferenceApp(AppCliArgs *args, void (*handler)(AppInferenceContext *context));
 void runWorkerApp(AppCliArgs *args);
