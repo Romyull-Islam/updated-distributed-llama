@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include "llm.hpp"  // ✅ for LlmHeader and loadLlmHeader
 #include "app.hpp"  // ✅ Needed for AppCliArgs
 
 

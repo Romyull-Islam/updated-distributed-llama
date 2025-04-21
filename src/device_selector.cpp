@@ -1,11 +1,12 @@
 #include "device_selector.hpp"
+#include "llm.hpp"
 #include <iostream>
 #include <unordered_map>
 #include <algorithm>
 #include <fstream>
 #include <string>
 #include <sys/stat.h>
-#include "llm.hpp"
+
 
 float getLocalMemoryGB() {
     std::ifstream meminfo("/proc/meminfo");
