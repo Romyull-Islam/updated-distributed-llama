@@ -91,3 +91,5 @@ dllama-api: src/dllama-api.cpp nn-quants.o nn-core.o nn-executor.o nn-network.o 
 
 device_selector.o: src/device_selector.cpp
 	$(CXX) $(CXXFLAGS) -c $^ -o $@
+inference_utils.o: src/inference_utils.cpp
+	$(CXX) $(CXXFLAGS) -c $^ -o $@

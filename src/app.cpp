@@ -105,7 +105,7 @@ AppCliArgs AppCliArgs::parse(int argc, char* *argv, bool requireMode) {
                 }
                 int hostLen = sep - v;
                 args.workerHosts[s] = new char[hostLen + 1];
-                std::memcpy(args->workerHosts[s], v, hostLen);
+                std::memcpy(args.workerHosts[s], v, hostLen);
                 args.workerHosts[s][hostLen] = '\0';
                 args.workerPorts[s] = std::atoi(sep + 1);
             }
@@ -152,9 +152,11 @@ void runInferenceApp(AppCliArgs *args, void (*handler)(AppInferenceContext *cont
     AppInferenceContext* context = new AppInferenceContext();
 
     context->args = args;
-    context->tokenizer = loadTokenizer(args->tokenizerPath);
-    context->sampler = new Sampler(args->temperature, args->topp, args->seed);
-    context->header = loadLlmHeader(args->modelPath);
+    context->tokenizer = new Tokenizer(args->tokenizerPath);
+    context->sampler = new Sampler(context->tokenizer->vocabSize, args->temperature, args->topp, args->seed);
+    context->header = new LlmHeader(loadLlmHeader(args->modelPath, args->maxSeqLen, args->syncType));
+
+
 
     std::vector<DeviceInfo> allDevices = discover_devices(args);
 
