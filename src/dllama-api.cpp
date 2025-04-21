@@ -19,7 +19,7 @@
 #endif
 #include "app.hpp"
 #include "tokenizer.hpp"
-#include "json.hpp"ß
+#include "json.hpp"
 #include "api-types.hpp"
 #include "nn/nn-network.hpp"
 #include "inference_utils.hpp"
@@ -324,7 +324,7 @@ private:
     NaiveCache naiveCache;
 
 public:
-    ApiServer(RootLlmInference *inference, Tokenizer *tokenizer, Sampler *sampler, AppCliArgs *args, LlmHeader *header, EosDetector *eosDetector, ChatTemplateGenerator *templateGenerator) {
+    ApiServer(Inference *inference, Tokenizer *tokenizer, Sampler *sampler, AppCliArgs *args, LlmHeader *header, EosDetector *eosDetector, ChatTemplateGenerator *templateGenerator) {
         this->inference = inference;
         this->tokenizer = tokenizer;
         this->sampler = sampler;
