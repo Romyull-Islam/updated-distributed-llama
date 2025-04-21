@@ -10,7 +10,7 @@
 #include "llm.hpp"             // for LlmHeader, loadLlmHeader, etc.
 #include "tokenizer.hpp"       // for Tokenizer and Sampler
 #include "device_selector.hpp" // for DeviceInfo, discover/sort/select
-#include "inference_utils.hpp" // for create_inference_engine
+ // for create_inference_engine
 
 class AppCliArgs {
 public:

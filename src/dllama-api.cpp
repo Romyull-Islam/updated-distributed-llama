@@ -17,8 +17,8 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #endif
-#include "tokenizer.hpp"
 #include "app.hpp"
+#include "tokenizer.hpp"
 #include "json.hpp"ß
 #include "api-types.hpp"
 #include "nn/nn-network.hpp"
