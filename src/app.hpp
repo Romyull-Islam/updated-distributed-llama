@@ -53,6 +53,18 @@ typedef struct {
     NnUint batchSize; // 0 = stop signal
 } LlmControlPacket;
 
+class Inference {
+public:
+    virtual ~Inference() = default;
+    virtual void setBatchSize(NnUint batchSize) = 0;
+    virtual void setPosition(NnUint position) = 0;
+    virtual void setToken(NnUint batchIndex, NnUint token) = 0;
+    virtual void forward() = 0;
+    virtual void finish() = 0;
+};
+
+
+
 class RootLlmInference {
 public:
     float *logitsPipe;

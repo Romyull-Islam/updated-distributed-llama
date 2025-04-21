@@ -5,7 +5,7 @@
 // If neither is given, fallback order is based on --workers list as: node1, node2, ...
 
 
-#include "device_selector.hpp"
+
 #include <cassert>
 #include <cstring>
 #include <stdexcept>
@@ -16,6 +16,7 @@
 #include <memory>
 #include "llm.hpp"
 #include "app.hpp"
+#include "device_selector.hpp"
 #include "tokenizer.hpp"
 #include "nn/nn-cpu.hpp"
 #include "nn/nn-network.hpp"
