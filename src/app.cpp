@@ -16,7 +16,6 @@
 #include <memory>
 #include "llm.hpp"
 #include "tokenizer.hpp"
-#include "sampler.hpp"
 #include "nn/nn-cpu.hpp"
 #include "nn/nn-network.hpp"
 
