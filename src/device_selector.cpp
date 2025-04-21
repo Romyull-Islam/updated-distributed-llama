@@ -86,8 +86,20 @@ std::vector<DeviceInfo> select_devices_incrementally(const std::vector<DeviceInf
     return selected;
 }
 
-double estimate_required_memory(const char* modelPath) {
-    LlmHeader header = loadLlmHeader(modelPath, 0, F_Q40);
-    float totalBytes = static_cast<float>(header.nParams) * 2.0f; // Q40 ~ 2 bytes/param
-    return totalBytes / (1024.0f * 1024.0f * 1024.0f); // Convert to GB
+float estimate_required_memory(const LlmHeader& header) {
+    float bytesPerParam = (header.weightType == F_Q80) ? 4.0f : 2.0f; // Q80 takes more bytes
+    float totalBytes = header.nParams * bytesPerParam;
+    float overheadFactor = 1.5f;  // buffer, kv-cache, pipes, etc.
+    return (totalBytes * overheadFactor) / (1024.0f * 1024.0f * 1024.0f);
+}
+
+float estimate_required_memory(const char* modelPath) {
+    try {
+        LlmHeader header = loadLlmHeader(modelPath, 0, F_Q40);  // we assume sync type doesn't affect this
+        return estimate_required_memory(header);
+    } catch (...) {
+        std::uintmax_t fileSize = std::filesystem::file_size(modelPath);
+        float fallbackFactor = 2.0f;
+        return (static_cast<float>(fileSize) * fallbackFactor) / (1024.0f * 1024.0f * 1024.0f);
+    }
 }
