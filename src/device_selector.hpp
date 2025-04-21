@@ -1,21 +1,26 @@
 #ifndef DEVICE_SELECTOR_HPP
 #define DEVICE_SELECTOR_HPP
 
-#include <vector>
 #include <string>
+#include <vector>
+#include "app.hpp"  // ✅ Needed for AppCliArgs
 
-class AppCliArgs; // ✅ Forward declaration
 
+// Forward declare AppCliArgs
+class AppCliArgs;
+
+// Define DeviceInfo
 struct DeviceInfo {
-    std::string host;
+    std::string name;
     double memoryGB;
+    std::string host;
 };
 
-// Your functions
+// Declarations
 std::vector<DeviceInfo> discover_devices(AppCliArgs* args);
 std::vector<DeviceInfo> sort_devices_by_memory(const std::vector<DeviceInfo>& devices);
-std::vector<DeviceInfo> sort_devices_by_priority_list(const std::vector<DeviceInfo>& devices, const std::vector<std::string>& priorityList);
-std::vector<DeviceInfo> select_devices_incrementally(const std::vector<DeviceInfo>& sortedDevices, double requiredGB);
-double estimate_required_memory(const char* modelPath);
+std::vector<DeviceInfo> sort_devices_by_priority_list(const std::vector<DeviceInfo>& devices, const std::vector<std::string>& priority);
+std::vector<DeviceInfo> select_devices_incrementally(const std::vector<DeviceInfo>& devices, float required_memory);
+float estimate_required_memory(const char* modelPath);
 
 #endif // DEVICE_SELECTOR_HPP

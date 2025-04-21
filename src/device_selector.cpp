@@ -45,21 +45,23 @@ float getRemoteMemoryGB(const std::string& ip) {
 std::vector<DeviceInfo> discover_devices(AppCliArgs* args) {
     std::vector<DeviceInfo> devices;
     float localMem = getLocalMemoryGB();
-    devices.push_back({"root", localMem, ""});
+    devices.push_back(DeviceInfo{"root", localMem, ""});
 
     for (int i = 0; i < args->nWorkers; i++) {
         std::string name = "node" + std::to_string(i + 1);
         float remoteMem = getRemoteMemoryGB(args->workerHosts[i]);
-        devices.push_back({name, remoteMem, args->workerHosts[i]});
+        devices.push_back(DeviceInfo{name, remoteMem, args->workerHosts[i]});
     }
     return devices;
 }
 
+
 std::vector<DeviceInfo> sort_devices_by_memory(const std::vector<DeviceInfo>& devices) {
     auto sorted = devices;
     std::sort(sorted.begin(), sorted.end(), [](const DeviceInfo& a, const DeviceInfo& b) {
-        return a.memory > b.memory;
+        return a.memoryGB > b.memoryGB;
     });
+
     return sorted;
 }
 
@@ -78,13 +80,13 @@ std::vector<DeviceInfo> select_devices_incrementally(const std::vector<DeviceInf
     float accumulated = 0.0f;
     for (const auto& d : devices) {
         selected.push_back(d);
-        accumulated += d.memory;
+        accumulated += d.memoryGB;
         if (accumulated >= required_memory) break;
     }
     return selected;
 }
 
-float estimate_required_memory(const char* modelPath) {
+double estimate_required_memory(const char* modelPath) {
     LlmHeader header = loadLlmHeader(modelPath, 0, F_Q40);
     float totalBytes = static_cast<float>(header.nParams) * 2.0f; // Q40 ~ 2 bytes/param
     return totalBytes / (1024.0f * 1024.0f * 1024.0f); // Convert to GB
