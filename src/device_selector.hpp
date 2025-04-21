@@ -4,6 +4,8 @@
 #include <vector>
 #include "app.hpp"
 
+
+
 struct DeviceInfo {
     std::string name;
     float memory; // in GB
