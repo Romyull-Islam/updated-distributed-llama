@@ -17,12 +17,12 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #endif
-
 #include "tokenizer.hpp"
 #include "app.hpp"
 #include "json.hpp"
 #include "api-types.hpp"
 #include "nn/nn-network.hpp"
+#include "inference_utils.hpp"
 
 typedef unsigned int pos_t;
 
@@ -530,6 +530,8 @@ std::vector<NnUint> extract_ports(const std::vector<DeviceInfo>& devices) {
     return ports;
 }
 
+
+/*
 // Create inference engine
 Inference* create_inference_engine(AppCliArgs* args, const std::vector<DeviceInfo>& selectedDevices) {
     if (selectedDevices.size() > 1) {
@@ -543,6 +545,7 @@ Inference* create_inference_engine(AppCliArgs* args, const std::vector<DeviceInf
         return createLocalInference(args->modelPath, args->nThreads);
     }
 }
+
 
 
 // Local (single-device) inference setup
@@ -587,7 +590,7 @@ Inference* createHybridRootInference(
 
     return new RootLlmInference(net, device, execution, executor, network);
 }
-
+*/
 
 // Unified inference runner
 /*void runInferenceApp(AppCliArgs* args, void (*serverFn)(AppInferenceContext*)) {

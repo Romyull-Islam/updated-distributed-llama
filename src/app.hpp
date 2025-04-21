@@ -2,10 +2,15 @@
 #define APP_HPP
 
 #include <chrono>
+#include <vector>
+#include <string>
 #include "nn/nn-core.hpp"
 #include "nn/nn-cpu.hpp"
-#include "tokenizer.hpp"
-#include "llm.hpp"
+#include "nn/nn-network.hpp"
+#include "llm.hpp"             // for LlmHeader, loadLlmHeader, etc.
+#include "tokenizer.hpp"       // for Tokenizer and Sampler
+#include "device_selector.hpp" // for DeviceInfo, discover/sort/select
+#include "inference_utils.hpp" // for create_inference_engine
 
 class AppCliArgs {
 public:
@@ -34,6 +39,10 @@ public:
 
     // worker
     NnUint port;
+
+    // new hybrid inference flags
+    bool prioritizeByMemory = false;
+    std::vector<std::string> priorityList;
 
     static AppCliArgs parse(int argc, char **argv, bool hasMode);
     ~AppCliArgs();
@@ -91,4 +100,4 @@ typedef struct {
 void runInferenceApp(AppCliArgs *args, void (*handler)(AppInferenceContext *context));
 void runWorkerApp(AppCliArgs *args);
 
-#endif
+#endif // APP_HPP

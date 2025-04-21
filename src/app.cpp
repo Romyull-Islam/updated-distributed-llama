@@ -18,7 +18,7 @@
 #include "tokenizer.hpp"
 #include "nn/nn-cpu.hpp"
 #include "nn/nn-network.hpp"
-
+#include "inference_utils.hpp"
 #if defined(DLLAMA_VULKAN)
 #include "nn/nn-vulkan.hpp"
 #endif
