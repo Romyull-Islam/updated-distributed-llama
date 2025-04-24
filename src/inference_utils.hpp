@@ -8,16 +8,8 @@
 #include "device_selector.hpp"
 
 class AppCliArgs;  // ✅ forward declaration
-class Inference {
-public:
-    virtual float* getLogitsPipe() const = 0;  // Required to access logits
-    virtual void setBatchSize(NnUint batchSize) = 0;
-    virtual void setPosition(NnUint pos) = 0;
-    virtual void setToken(NnUint index, int token) = 0;
-    virtual void forward() = 0;
+class Inference ;
 
-    virtual ~Inference() {}
-};
 
 
 Inference* create_inference_engine(AppCliArgs* args, const std::vector<DeviceInfo>& selectedDevices);
