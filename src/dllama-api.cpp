@@ -314,7 +314,7 @@ public:
 
 class ApiServer {
 private:
-    RootLlmInference *inference;
+    Inference *inference;
     Tokenizer *tokenizer;
     Sampler *sampler;
     AppCliArgs *args;

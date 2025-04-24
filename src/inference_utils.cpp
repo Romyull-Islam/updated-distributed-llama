@@ -3,6 +3,7 @@
 #include "nn/nn-network.hpp"
 #include "nn/nn-cpu.hpp"
 #include "llm.hpp"
+#include "app.hpp"
 #include <cstring>
 
 std::vector<char*> extract_hosts(const std::vector<DeviceInfo>& devices) {
