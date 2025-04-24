@@ -6,6 +6,9 @@
 #include "app.hpp"
 #include <cstring>
 
+
+
+
 std::vector<char*> extract_hosts(const std::vector<DeviceInfo>& devices) {
     std::vector<char*> hosts;
     for (const auto& d : devices) {

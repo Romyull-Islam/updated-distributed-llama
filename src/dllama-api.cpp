@@ -411,7 +411,7 @@ public:
             inference->setToken(0, token);
             inference->forward();
 
-            token = sampler->sample(inference->logitsPipe);
+            token = sampler->sample(inference->getLogitsPipe());
 
             char *piece = tokenizer->decode(token);
             EosDetectorType eosType = eosDetector->append(token, piece);
