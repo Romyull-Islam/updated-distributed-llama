@@ -74,38 +74,45 @@ std::vector<DeviceInfo> sort_devices_by_priority_list(const std::vector<DeviceIn
     return sorted;
 }
 
+// device_selector.cpp
 std::vector<DeviceInfo> select_devices_incrementally(const std::vector<DeviceInfo>& devices, double requiredMemoryGB) {
     std::vector<DeviceInfo> selected;
     double accumulated = 0.0;
     for (const auto& d : devices) {
+        if (d.memoryGB <= 0.0) continue; // Skip invalid devices
         selected.push_back(d);
         accumulated += d.memoryGB;
         if (accumulated >= requiredMemoryGB) break;
+    }
+    if (selected.empty()) {
+        throw std::runtime_error("No devices with sufficient memory for model (required: " + std::to_string(requiredMemoryGB) + " GB)");
     }
     return selected;
 }
 
 float estimate_required_memory(const char* modelPath) {
     try {
-        LlmHeader header = loadLlmHeader(modelPath, 0, F_Q40);  // fallback to default float type
-
-        // Fallback estimate using known structure without relying on nParams
+        LlmHeader header = loadLlmHeader(modelPath, 0, F_Q40);
+        // Improved estimation
         float estimatedParams = static_cast<float>(
-            (header.dim * header.nLayers * 12) +
-            (header.vocabSize * header.dim) +
-            (header.hiddenDim * header.dim * 2)
+            (header.dim * header.nLayers * 12) + // Transformer layers
+            (header.vocabSize * header.dim) +    // Embedding
+            (header.hiddenDim * header.dim * 2)  // Feed-forward
         );
-
-        float bytesPerParam = (header.weightType == F_Q80) ? 4.0f : 2.0f;
+        float bytesPerParam = (header.weightType == F_Q80) ? 1.0f :
+                             (header.weightType == F_Q40) ? 0.5f :
+                             (header.weightType == F_16) ? 2.0f : 4.0f;
         float totalBytes = estimatedParams * bytesPerParam;
-        float overheadFactor = 1.5f;
-        return (totalBytes * overheadFactor) / (1024.0f * 1024.0f * 1024.0f);
+        float overheadFactor = 2.0f; // Account for KV cache, buffers
+        float estimatedGB = (totalBytes * overheadFactor) / (1024.0f * 1024.0f * 1024.0f);
+        // Ensure minimum memory for small models
+        return std::max(estimatedGB, 1.0f);
     } catch (...) {
         struct stat st;
         if (stat(modelPath, &st) == 0) {
-            float fallbackFactor = 2.0f;
+            float fallbackFactor = 2.5f; // More conservative
             return (static_cast<float>(st.st_size) * fallbackFactor) / (1024.0f * 1024.0f * 1024.0f);
         }
-        return 1.0f;  // Fallback to 1 GB if file check fails
+        throw std::runtime_error("Cannot estimate model memory requirements");
     }
 }

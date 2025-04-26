@@ -150,29 +150,29 @@ AppCliArgs::~AppCliArgs() {
         delete[] workerPorts;
 }
 
+// app.cpp
 void runInferenceApp(AppCliArgs *args, void (*handler)(AppInferenceContext *context)) {
     AppInferenceContext* context = new AppInferenceContext();
+    try {
+        context->args = args;
+        context->tokenizer = new Tokenizer(args->tokenizerPath);
+        context->sampler = new Sampler(context->tokenizer->vocabSize, args->temperature, args->topp, args->seed);
+        context->header = new LlmHeader(loadLlmHeader(args->modelPath, args->maxSeqLen, args->syncType));
 
-    context->args = args;
-    context->tokenizer = new Tokenizer(args->tokenizerPath);
-    context->sampler = new Sampler(context->tokenizer->vocabSize, args->temperature, args->topp, args->seed);
-    context->header = new LlmHeader(loadLlmHeader(args->modelPath, args->maxSeqLen, args->syncType));
+        std::vector<DeviceInfo> allDevices = discover_devices(args);
+        std::vector<DeviceInfo> sortedDevices = args->prioritizeByMemory
+            ? sort_devices_by_memory(allDevices)
+            : sort_devices_by_priority_list(allDevices, args->priorityList);
+        double requiredGB = estimate_required_memory(args->modelPath);
+        std::vector<DeviceInfo> selectedDevices = select_devices_incrementally(sortedDevices, requiredGB);
+        context->inference = create_inference_engine(args, selectedDevices);
 
-
-
-    std::vector<DeviceInfo> allDevices = discover_devices(args);
-
-    std::vector<DeviceInfo> sortedDevices = args->prioritizeByMemory
-        ? sort_devices_by_memory(allDevices)
-        : sort_devices_by_priority_list(allDevices, args->priorityList);
-
-    double requiredGB = estimate_required_memory(args->modelPath);
-    std::vector<DeviceInfo> selectedDevices = select_devices_incrementally(sortedDevices, requiredGB);
-
-    context->inference = create_inference_engine(args, selectedDevices);
-
-    handler(context);
-
+        handler(context);
+    } catch (const std::exception& e) {
+        std::cerr << "Error in runInferenceApp: " << e.what() << std::endl;
+        throw;
+    }
+    // Cleanup
     delete context->sampler;
     delete context->inference;
     delete context->tokenizer;
