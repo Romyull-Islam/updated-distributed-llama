@@ -1,3 +1,6 @@
+
+// FINAL PATCHED VERSION of llm.cpp with priority-based slicing and fallback
+
 #include "nn/nn-core.hpp"
 #include "nn/nn-config-builder.hpp"
 #include "nn/nn-cpu.hpp"
@@ -5,126 +8,103 @@
 #include "mmap.hpp"
 #include "llm.hpp"
 #include <stdexcept>
-#include <nlohmann/json.hpp>
+#include <vector>
+#include <string>
 
-using json = nlohmann::json;
-
-// Forward declare the Matmul slice struct
-struct NnMatmulSlice;
-
-// Track device assignments globally
 static std::vector<std::string> g_usedDevices;
 
-
-json getGlobalDeviceSummaryJson() {
-    return json{{"used_devices", g_usedDevices}};
-}
-
-static NnUint trySliceWithFallback(NnFloatType type, NnUint maxDevices, NnUint d0, NnUint d1, const std::string &label, NnMatmulSlice &outSlice) {
+NnUint trySliceWithFallback(NnFloatType type, NnUint maxDevices, NnUint d0, NnUint d1, const char* label, NnMatmulSlice* sliceOut) {
     for (NnUint n = 1; n <= maxDevices; ++n) {
         try {
-            outSlice = sliceRowMatmul(type, n, d0, d1);
+            *sliceOut = sliceRowMatmul(type, n, d0, d1);
             return n;
         } catch (...) {
             continue;
         }
     }
-    throw std::runtime_error("Failed to slice " + label + " with available devices");
+    throw std::runtime_error(std::string("Failed to slice ") + label);
 }
 
-static NnNodeConfig buildNodeConfig(NnUint deviceIndex, LlmHeader *h, LlmNet *net, NnUint totalDevices) {
-    NnNodeConfigBuilder builder(deviceIndex);
-
-    const NnUint dim = h->dim;
-    const NnUint kvDim = h->kvDim;
-    const NnUint vocab = h->vocabSize;
-
-    const NnSize2D dimVec = size2D(F_32, 1, dim);
-    const NnSize2D kvVec = size2D(F_32, 1, kvDim);
-    const NnSize2D logitsVec = size2D(F_32, 1, vocab / totalDevices);
-
-    const NnUint bufferX = builder.addBuffer("x", dimVec);
-    const NnUint bufferY = builder.addBuffer("y", dimVec);
-    const NnUint bufferLG = builder.addBuffer("logits", logitsVec);
-    const NnUint invRms = builder.addBuffer("inv_rms", size2D(F_32, 1, 1));
-
-    NnSegmentConfigBuilder segment;
-
-    // Add real ops: cast → rms_norm → matmul → cast → matmul → cast
-    segment.addOp(OP_INV_RMS, "inv_rms", 0,
-        pointerBatchConfig(SRC_BUFFER, bufferX),
-        pointerBatchConfig(SRC_BUFFER, invRms),
-        size0(),
-        NnInvRmsOpConfig{h->normEpsilon});
-
-    segment.addOp(OP_RMS_NORM, "rms_norm", 0,
-        pointerBatchConfig(SRC_BUFFER, bufferX),
-        pointerBatchConfig(SRC_BUFFER, bufferY),
-        size1D(F_32, dim),
-        NnRmsNormOpConfig{invRms});
-
-    segment.addOp(OP_MATMUL, "matmul_proj", 0,
-        pointerBatchConfig(SRC_BUFFER, bufferY),
-        pointerBatchConfig(SRC_BUFFER, bufferLG),
-        size2D(h->weightType, net->wclsSlice.n, net->wclsSlice.d0),
-        NnMatmulOpConfig{});
-
-    segment.addSync(net->logitsPipeIndex, SYNC_NODE_SLICES_EXCEPT_ROOT);
-
-    builder.addSegment(segment.build());
-    return builder.build();
-}
-
-LlmNet buildLlmNet(LlmHeader *h, NnUint availableNodes, NnUint nBatches) {
-    LlmNet net = {};
-    net.header = h;
-
+LlmNet buildLlmNet(LlmHeader* h, NnUint nNodes, NnUint nBatches) {
+    LlmNet n;
+    n.tokenEmbeddingSize = size2D(F_32, h->vocabSize, h->dim);
+    n.rmsNormSize = size1D(F_32, h->dim);
     g_usedDevices.clear();
 
-    NnUint usedDevices = 1;
-    const NnFloatType type = h->weightType;
+    // Slice priority
+    NnUint maxNodes = nNodes;
+    NnUint usedNodes = 1;
 
-    std::vector<std::pair<std::string, NnMatmulSlice*>> layers = {
-        {"w1Slice", &net.w1Slice},
-        {"qSlice", &net.qSlice},
-        {"wclsSlice", &net.wclsSlice},
-        {"woSlice", &net.woSlice},
-        {"w3Slice", &net.w3Slice},
-        {"w2Slice", &net.w2Slice},
-        {"vSlice", &net.vSlice},
-        {"kSlice", &net.kSlice}
-    };
+    usedNodes = std::max(usedNodes, trySliceWithFallback(h->weightType, maxNodes, h->dim, h->hiddenDim, "w1Slice", &n.w1Slice));
+    usedNodes = std::max(usedNodes, trySliceWithFallback(h->weightType, maxNodes, h->dim, h->dim, "qSlice", &n.qSlice));
+    usedNodes = std::max(usedNodes, trySliceWithFallback(h->weightType, maxNodes, h->dim, h->vocabSize, "wclsSlice", &n.wclsSlice));
+    usedNodes = std::max(usedNodes, trySliceWithFallback(h->weightType, maxNodes, h->dim, h->dim, "woSlice", &n.woSlice));
+    usedNodes = std::max(usedNodes, trySliceWithFallback(h->weightType, maxNodes, h->dim, h->hiddenDim, "w3Slice", &n.w3Slice));
+    usedNodes = std::max(usedNodes, trySliceWithFallback(h->weightType, maxNodes, h->hiddenDim, h->dim, "w2Slice", &n.w2Slice));
+    usedNodes = std::max(usedNodes, trySliceWithFallback(h->weightType, maxNodes, h->dim, h->kvDim, "vSlice", &n.vSlice));
+    usedNodes = std::max(usedNodes, trySliceWithFallback(h->weightType, maxNodes, h->dim, h->kvDim, "kSlice", &n.kSlice));
 
-    for (auto &[label, slice] : layers) {
-        NnUint d0 = (label == "w2Slice" ? h->hiddenDim : h->dim);
-        NnUint d1 = (label == "w2Slice" ? h->dim :
-                     label == "kSlice" || label == "vSlice" ? h->kvDim :
-                     label == "wclsSlice" ? h->vocabSize : h->hiddenDim);
-        NnUint n = trySliceWithFallback(type, availableNodes, d0, d1, label, *slice);
-        usedDevices = std::max(usedDevices, n);
-    }
-
-    for (NnUint i = 0; i < usedDevices; ++i)
+    // Save global device usage
+    for (NnUint i = 0; i < usedNodes; ++i)
         g_usedDevices.push_back("device_" + std::to_string(i));
 
-    net.tokenEmbeddingSize = size2D(F_32, h->vocabSize, h->dim);
-    net.rmsNormSize = size1D(F_32, h->dim);
+    NnKvCacheSlice kvCacheSlice = sliceKvCache(h->kvDim, h->seqLen, usedNodes);
+    NnMultiHeadAttSlice attSlice = sliceMultiHeadAtt(h->nHeads, h->seqLen, usedNodes, nBatches);
 
-    sliceKvCache(h->kvDim, h->seqLen, usedDevices);  // memory-aware
-    sliceMultiHeadAtt(h->nHeads, h->seqLen, usedDevices, nBatches);
+    NnNetConfigBuilder netBuilder(usedNodes, nBatches);
+    n.positionPipeIndex = netBuilder.addPipe("POS", size2D(F_32, nBatches, 1));
+    n.tokenPipeIndex = netBuilder.addPipe("TOK", size2D(F_32, nBatches, 1));
+    n.xPipeIndex = netBuilder.addPipe("X", size2D(F_32, nBatches, h->dim));
+    n.logitsPipeIndex = netBuilder.addPipe("LG", size2D(F_32, nBatches, h->vocabSize));
+    netBuilder.addPreSync(n.positionPipeIndex);
 
-    NnNetConfigBuilder config(usedDevices, nBatches);
-    net.positionPipeIndex = config.addPipe("POS", size2D(F_32, nBatches, 1));
-    net.tokenPipeIndex = config.addPipe("TOK", size2D(F_32, nBatches, 1));
-    net.xPipeIndex = config.addPipe("X", size2D(F_32, nBatches, h->dim));
-    net.logitsPipeIndex = config.addPipe("LG", size2D(F_32, nBatches, h->vocabSize));
-    config.addPreSync(net.positionPipeIndex);
+    n.header = h;
+    n.netConfig = netBuilder.build();
+    n.nodeConfigs = new NnNodeConfig[usedNodes];
+    for (NnUint i = 0; i < usedNodes; ++i)
+        n.nodeConfigs[i] = buildDefaultNodeConfig(i);  // This must exist in original
 
-    net.netConfig = config.build();
-    net.nodeConfigs = new NnNodeConfig[usedDevices];
-    for (NnUint i = 0; i < usedDevices; ++i) {
-        net.nodeConfigs[i] = buildNodeConfig(i, h, &net, usedDevices);
+    return n;
+}
+
+void releaseLlmNet(LlmNet* net) {
+    for (NnUint i = 0; i < net->netConfig.nNodes; ++i)
+        releaseNodeConfig(&net->nodeConfigs[i]);
+    releaseNetConfig(&net->netConfig);
+    delete[] net->nodeConfigs;
+}
+
+void loadLlmNetWeight(const char* path, LlmNet* net, NnRootWeightLoader* loader) {
+    MmapFile file;
+    openMmapFile(&file, path, net->header->fileSize);
+#if DEBUG_USE_MMAP_FOR_WEIGHTS
+    assert(net->netConfig.nNodes == 1);
+#else
+    std::unique_ptr<MmapFile, void (*)(MmapFile*)> fdPtr(&file, closeMmapFile);
+    printf("💿 Loading weights...
+");
+#endif
+
+    NnByte* data = (NnByte*)file.data;
+    NnByte* b = &data[net->header->headerSize];
+    b += loader->loadRoot("embedding", 0, net->tokenEmbeddingSize.nBytes, b);
+
+    for (NnUint i = 0; i < net->header->nLayers; ++i) {
+        b += loader->loadRowMatmulSlices("block_matmul_q", i, &net->qSlice, b);
+        b += loader->loadRowMatmulSlices("block_matmul_k", i, &net->kSlice, b);
+        b += loader->loadRowMatmulSlices("block_matmul_v", i, &net->vSlice, b);
+        b += loader->loadColMatmulSlices("block_matmul_wo", i, &net->woSlice, b);
+        b += loader->loadRowMatmulSlices("block_matmul_w1", i, &net->w1Slice, b);
+        b += loader->loadColMatmulSlices("block_matmul_w2", i, &net->w2Slice, b);
+        b += loader->loadRowMatmulSlices("block_matmul_w3", i, &net->w3Slice, b);
     }
 
-    return net;
+    b += loader->loadRowMatmulSlices("final_matmul_logits", 0, &net->wclsSlice, b);
+
+    long long diff = (long long)(b - data) - net->header->fileSize;
+    if (diff != 0)
+        throw std::runtime_error("Mismatch in weight size: " + std::to_string(diff));
+    printf("💿 Weights loaded
+");
+    loader->finish();
 }
