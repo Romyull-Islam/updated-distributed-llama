@@ -28,6 +28,42 @@ static NnUint trySliceWithFallback(NnFloatType type, NnUint maxDevices, NnUint d
     throw std::runtime_error("Failed to slice " + label + " with available devices");
 }
 
+// Inline buildNodeConfig implementation
+static NnNodeConfig buildNodeConfig(NnUint deviceIndex) {
+    NnNodeConfigBuilder builder(deviceIndex);
+
+    NnSize2D dimVec = size2D(F_32, 1, 4096); // Example dimension, can be adjusted
+    NnSize2D kvVec = size2D(F_32, 1, 512);   // For KV heads if different
+    NnSize2D logitsVec = size2D(F_32, 1, 32000); // Vocab size for classifier
+
+    // Add all necessary buffers
+    builder.addBuffer("X", dimVec);
+    builder.addBuffer("POS", size2D(F_32, 1, 1));
+    builder.addBuffer("TOK", size2D(F_32, 1, 1));
+    builder.addBuffer("LG", logitsVec);
+
+    NnSegmentConfigBuilder segment;
+
+    // Dummy op: token embedding
+    NnPointerConfig inputTok = { .bufferIndex = 2, .rowOffset = 0, .colOffset = 0 };
+    NnPointerConfig outputTok = { .bufferIndex = 0, .rowOffset = 0, .colOffset = 0 };
+    segment.addOp(NN_OP_TOKEN_EMBED, "tok_embed", 0, inputTok, outputTok, dimVec, (NnEmptyConfig){});
+
+    // Dummy op: RMSNorm
+    segment.addOp(NN_OP_RMSNORM, "rms", 0, outputTok, outputTok, size2D(F_32, 1, 0), (NnEmptyConfig){});
+
+    // Dummy op: Attention (Q)
+    segment.addOp(NN_OP_MATMUL, "att_q", 0, outputTok, outputTok, dimVec, (NnEmptyConfig){});
+
+    // Add dummy sync
+    segment.addSync(0, NN_SYNC_ALL_REDUCE);
+
+    // Add segment and return
+    builder.addSegment(segment.build());
+
+    return builder.build();
+}
+
 LlmNet buildLlmNet(LlmHeader *h, NnUint availableNodes, NnUint nBatches) {
     LlmNet net = {};
     net.header = h;
