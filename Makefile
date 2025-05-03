@@ -15,6 +15,10 @@ ifdef WVLA
 	CXXFLAGS += -Wvla-extension
 endif
 
+ifdef JSON_INC
+	CXXFLAGS += -I$(JSON_INC)
+endif
+
 ifdef DLLAMA_VULKAN
 	CGLSLC = glslc
 
