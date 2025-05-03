@@ -17,12 +17,12 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #endif
-#include "app.hpp"
+
 #include "tokenizer.hpp"
+#include "app.hpp"
 #include "json.hpp"
 #include "api-types.hpp"
 #include "nn/nn-network.hpp"
-#include "inference_utils.hpp"
 
 typedef unsigned int pos_t;
 
@@ -314,7 +314,7 @@ public:
 
 class ApiServer {
 private:
-    Inference *inference;
+    RootLlmInference *inference;
     Tokenizer *tokenizer;
     Sampler *sampler;
     AppCliArgs *args;
@@ -324,7 +324,7 @@ private:
     NaiveCache naiveCache;
 
 public:
-    ApiServer(Inference *inference, Tokenizer *tokenizer, Sampler *sampler, AppCliArgs *args, LlmHeader *header, EosDetector *eosDetector, ChatTemplateGenerator *templateGenerator) {
+    ApiServer(RootLlmInference *inference, Tokenizer *tokenizer, Sampler *sampler, AppCliArgs *args, LlmHeader *header, EosDetector *eosDetector, ChatTemplateGenerator *templateGenerator) {
         this->inference = inference;
         this->tokenizer = tokenizer;
         this->sampler = sampler;
@@ -411,7 +411,7 @@ public:
             inference->setToken(0, token);
             inference->forward();
 
-            token = sampler->sample(inference->getLogitsPipe());
+            token = sampler->sample(inference->logitsPipe);
 
             char *piece = tokenizer->decode(token);
             EosDetectorType eosType = eosDetector->append(token, piece);
@@ -504,153 +504,28 @@ void handleModelsRequest(HttpRequest& request, const char* modelPath) {
     request.writeJson(response);
 }
 
-
-
-
-// Extract helpers
-std::vector<char*> extract_hosts(const std::vector<DeviceInfo>& devices) {
-    std::vector<char*> hosts;
-    for (const auto& d : devices) {
-        if (!d.host.empty()) {
-            char* host = new char[d.host.size() + 1];
-            std::strcpy(host, d.host.c_str());
-            hosts.push_back(host);
-        }
-    }
-    return hosts;
-}
-
-std::vector<NnUint> extract_ports(const std::vector<DeviceInfo>& devices) {
-    std::vector<NnUint> ports;
-    for (const auto& d : devices) {
-        if (!d.host.empty()) {
-            ports.push_back(9999); // Assumes default port
-        }
-    }
-    return ports;
-}
-
-
-/*
-// Create inference engine
-Inference* create_inference_engine(AppCliArgs* args, const std::vector<DeviceInfo>& selectedDevices) {
-    if (selectedDevices.size() > 1) {
-        return createHybridRootInference(
-            args->modelPath,
-            extract_hosts(selectedDevices),
-            extract_ports(selectedDevices),
-            args->nThreads
-        );
-    } else {
-        return createLocalInference(args->modelPath, args->nThreads);
-    }
-}
-
-
-
-// Local (single-device) inference setup
-Inference* createLocalInference(const char* modelPath, int nThreads) {
-    LlmHeader* header = new LlmHeader(loadLlmHeader(modelPath, 0, F_Q40));
-    LlmNet* net = new LlmNet(buildLlmNet(header, 1, 32));
-    NnNodeConfig* rootNodeConfig = &net->nodeConfigs[0];
-    NnNetExecution* execution = new NnNetExecution(nThreads, &net->netConfig);
-    NnDevice* device = new NnCpuDevice(&net->netConfig, rootNodeConfig, execution);
-    NnFakeNodeSynchronizer* synchronizer = new NnFakeNodeSynchronizer();
-    NnExecutor* executor = new NnExecutor(&net->netConfig, rootNodeConfig, device, execution, synchronizer, false);
-
-    NnRootWeightLoader loader(executor, nullptr, 1);
-    loadLlmNetWeight(modelPath, net, &loader);
-
-    return new RootLlmInference(net, device, execution, executor, nullptr);
-}
-
-// Hybrid (multi-device) inference setup
-Inference* createHybridRootInference(
-    const char* modelPath,
-    const std::vector<std::string>& hosts,
-    const std::vector<int>& ports,
-    int nThreads
-) {
-    NnUint nNodes = hosts.size() + 1;
-
-    LlmHeader* header = new LlmHeader(loadLlmHeader(modelPath, 0, F_Q40));
-    LlmNet* net = new LlmNet(buildLlmNet(header, nNodes, 32));
-    NnNodeConfig* rootNodeConfig = &net->nodeConfigs[0];
-    NnNetExecution* execution = new NnNetExecution(nThreads, &net->netConfig);
-
-    NnNetwork* network = NnNetwork::connect(nNodes - 1, hosts, ports).release();
-    NnNodeSynchronizer* synchronizer = new NnNetworkNodeSynchronizer(network, execution, &net->netConfig, rootNodeConfig);
-    NnRootConfigWriter(network).writeToWorkers(&net->netConfig, net->nodeConfigs);
-
-    NnDevice* device = new NnCpuDevice(&net->netConfig, rootNodeConfig, execution);
-    NnExecutor* executor = new NnExecutor(&net->netConfig, rootNodeConfig, device, execution, synchronizer, false);
-
-    NnRootWeightLoader loader(executor, network, nNodes);
-    loadLlmNetWeight(modelPath, net, &loader);
-
-    return new RootLlmInference(net, device, execution, executor, network);
-}
-*/
-
-// Unified inference runner
-/*void runInferenceApp(AppCliArgs* args, void (*serverFn)(AppInferenceContext*)) {
-    AppInferenceContext* context = new AppInferenceContext();
-
-    context->args = args;
-    context->tokenizer = loadTokenizer(args->tokenizerPath);
-    context->sampler = new Sampler(args->temperature, args->topp, args->seed);
-    context->header = loadLlmHeader(args->modelPath);
-
-    std::vector<DeviceInfo> allDevices = discover_devices(args);
-
-    std::vector<DeviceInfo> sortedDevices = args->prioritizeByMemory
-        ? sort_devices_by_memory(allDevices)
-        : sort_devices_by_priority_list(allDevices, args->priorityList);
-
-    double requiredGB = estimate_required_memory(args->modelPath);
-
-    std::vector<DeviceInfo> selectedDevices = select_devices_incrementally(sortedDevices, requiredGB);
-
-    context->inference = create_inference_engine(args, selectedDevices);
-
-    serverFn(context);
-
-    delete context->sampler;
-    delete context->inference;
-    delete context->tokenizer;
-    delete context->header;
-    delete context;
-}*/
-
 static void server(AppInferenceContext *context) {
     int serverSocket = createServerSocket(context->args->port);
 
     TokenizerChatStops stops(context->tokenizer);
     ChatTemplateGenerator templateGenerator(context->args->chatTemplateType, context->tokenizer->chatTemplate, stops.stops[0]);
-    EosDetector eosDetector(
-        stops.nStops,
-        context->tokenizer->eosTokenIds.data(),
-        stops.stops,
-        stops.maxStopLength,
-        stops.maxStopLength
-    );
-
-    ApiServer api(
-        context->inference,
-        context->tokenizer,
-        context->sampler,
-        context->args,
-        context->header,
-        &eosDetector,
-        &templateGenerator
-    );
-
-    std::vector<Route> routes = {
-        {"/v1/chat/completions", HttpMethod::METHOD_POST, std::bind(&handleCompletionsRequest, std::placeholders::_1, &api)},
-        {"/v1/models", HttpMethod::METHOD_GET, std::bind(&handleModelsRequest, std::placeholders::_1, context->args->modelPath)}
-    };
+    EosDetector eosDetector(stops.nStops, context->tokenizer->eosTokenIds.data(), stops.stops, stops.maxStopLength, stops.maxStopLength);
+    ApiServer api(context->inference, context->tokenizer, context->sampler, context->args, context->header, &eosDetector, &templateGenerator);
 
     printf("Server URL: http://127.0.0.1:%d/v1/\n", context->args->port);
+
+    std::vector<Route> routes = {
+        {
+            "/v1/chat/completions",
+            HttpMethod::METHOD_POST,
+            std::bind(&handleCompletionsRequest, std::placeholders::_1, &api)
+        },
+        {
+            "/v1/models",
+            HttpMethod::METHOD_GET,
+            std::bind(&handleModelsRequest, std::placeholders::_1, context->args->modelPath)
+        }
+    };
 
     while (true) {
         try {
@@ -669,18 +544,27 @@ static void server(AppInferenceContext *context) {
 }
 
 #ifdef _WIN32
-#define EXECUTABLE_NAME "dllama-api.exe"
+    #define EXECUTABLE_NAME "dllama-api.exe"
 #else
-#define EXECUTABLE_NAME "dllama-api"
+    #define EXECUTABLE_NAME "dllama-api"
 #endif
 
 void usage() {
-    fprintf(stderr, "Usage: %s [--model-name <name>] [--model <path>] [--tokenizer <path>] [--port <p>]\n", EXECUTABLE_NAME);
-    fprintf(stderr, "       [--buffer-float-type f32|f16|q40|q80] [--max-seq-len <max>] [--nthreads <n>]\n");
-    fprintf(stderr, "       [--workers <ip:port> ...] [--temperature <temp>] [--topp <t>] [--seed <s>]\n");
-    fprintf(stderr, "       [--prioritize-by-memory] [--priority node1,node2,...]\n");
+    fprintf(stderr, "Usage: %s {--model <path>} {--tokenizer <path>} [--port <p>]\n", EXECUTABLE_NAME);
+    fprintf(stderr, "        [--buffer-float-type {f32|f16|q40|q80}]\n");
+    fprintf(stderr, "        [--weights-float-type {f32|f16|q40|q80}]\n");
+    fprintf(stderr, "        [--max-seq-len <max>]\n");
+    fprintf(stderr, "        [--nthreads <n>]\n");
+    fprintf(stderr, "        [--workers <ip:port> ...]\n");
+    fprintf(stderr, "        [--temperature <temp>]\n");
+    fprintf(stderr, "        [--topp <t>]\n");
+    fprintf(stderr, "        [--seed <s>]\n");
     fprintf(stderr, "Example:\n");
-    fprintf(stderr, "  sudo nice -n -20 ./dllama-api --model-name llama3-8b_q40 --port 9990 \\\n        --nthreads 4 --prioritize-by-memory --workers 10.0.0.2:9999 10.0.0.3:9999\n");
+    fprintf(stderr, "  sudo nice -n -20 ./dllama-api --port 9990 --nthreads 4 \\\n");
+    fprintf(stderr, "    --model dllama_model_llama3_2_3b_instruct_q40.m \\\n");
+    fprintf(stderr, "    --tokenizer dllama_tokenizer_llama3_2_3b_instruct_q40.t \\\n");
+    fprintf(stderr, "    --buffer-float-type q80 --max-seq-len 8192 \\\n");
+    fprintf(stderr, "    --workers 10.0.0.2:9998 10.0.0.3:9998 10.0.0.4:9998\n");
     fflush(stderr);
 }
 
@@ -694,14 +578,13 @@ int main(int argc, char *argv[]) {
         if (args.help) {
             usage();
         } else {
-            runInferenceApp(&args, server); // <- THIS ONE from app.cpp
+            runInferenceApp(&args, server); // ✅ buildLlmNet in llm.cpp is used internally with prioritized logic
         }
     } catch (std::exception &e) {
-        printf("🚨 Critical error: %s\n", e.what());
+        printf("\U0001F6A8 Critical error: %s\n", e.what());
         returnCode = EXIT_FAILURE;
     }
 
     cleanupSockets();
     return returnCode;
 }
-

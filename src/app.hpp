@@ -2,15 +2,10 @@
 #define APP_HPP
 
 #include <chrono>
-#include <vector>
-#include <string>
 #include "nn/nn-core.hpp"
 #include "nn/nn-cpu.hpp"
-#include "nn/nn-network.hpp"
-#include "llm.hpp"             // for LlmHeader, loadLlmHeader, etc.
-#include "tokenizer.hpp"       // for Tokenizer and Sampler
-#include "device_selector.hpp" // for DeviceInfo, discover/sort/select
- // for create_inference_engine
+#include "tokenizer.hpp"
+#include "llm.hpp"
 
 class AppCliArgs {
 public:
@@ -36,13 +31,11 @@ public:
     NnUint maxSeqLen;
     bool netTurbo;
     int gpuIndex;
+    int gpuSegmentFrom;
+    int gpuSegmentTo;
 
     // worker
     NnUint port;
-
-    // new hybrid inference flags
-    bool prioritizeByMemory = false;
-    std::vector<std::string> priorityList;
 
     static AppCliArgs parse(int argc, char **argv, bool hasMode);
     ~AppCliArgs();
@@ -53,18 +46,6 @@ typedef struct {
     NnUint batchSize; // 0 = stop signal
 } LlmControlPacket;
 
-class Inference {
-public:
-    virtual ~Inference() = default;
-    virtual void setBatchSize(NnUint batchSize) = 0;
-    virtual void setPosition(NnUint position) = 0;
-    virtual void setToken(NnUint batchIndex, NnUint token) = 0;
-    virtual void forward() = 0;
-    virtual void finish() = 0;
-};
-
-
-
 class RootLlmInference {
 public:
     float *logitsPipe;
@@ -72,13 +53,12 @@ private:
     float *tokenPipe;
     float *positionPipe;
     LlmHeader *header;
-    NnDevice *device;
     NnNetExecution *execution;
     NnExecutor *executor;
     NnNetwork *network;
     LlmControlPacket controlPacket;
 public:
-    RootLlmInference(LlmNet *net, NnDevice *device, NnNetExecution *execution, NnExecutor *executor, NnNetwork *network);
+    RootLlmInference(LlmNet *net, NnNetExecution *execution, NnExecutor *executor, NnNetwork *network);
     void setBatchSize(NnUint batchSize);
     void setPosition(NnUint position);
     void setToken(NnUint batchIndex, NnUint token);
@@ -102,15 +82,14 @@ public:
 typedef struct {
     AppCliArgs *args;
     LlmHeader *header;
-    Inference *inference;  // ✅ now accepts both RootLlmInference and future types
+    RootLlmInference *inference;
     Tokenizer *tokenizer;
     Sampler *sampler;
     NnNetwork *network;
     NnExecutor *executor;
 } AppInferenceContext;
 
-
 void runInferenceApp(AppCliArgs *args, void (*handler)(AppInferenceContext *context));
 void runWorkerApp(AppCliArgs *args);
 
-#endif // APP_HPP
+#endif

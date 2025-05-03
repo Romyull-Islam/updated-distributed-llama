@@ -1,7 +1,5 @@
 CXX = g++
-NVCC = nvcc
-CXXFLAGS = -std=c++11 -Werror -Wformat -Werror=format-security -I./src
-NVCCFLAGS = -std=c++11 -O3 -I./src
+CXXFLAGS = -std=c++11 -Werror -Wformat -Werror=format-security
 
 ifndef TERMUX_VERSION
 	CXXFLAGS += -march=native -mtune=native
@@ -9,7 +7,6 @@ endif
 
 ifdef DEBUG
 	CXXFLAGS += -g -fsanitize=address
-	NVCCFLAGS += -g
 else
 	CXXFLAGS += -O3
 endif
@@ -32,13 +29,6 @@ endif
 	DEPS += nn-vulkan.o
 endif
 
-ifdef DLLAMA_CUDA
-	CUDA_LIBS += -L/usr/local/cuda/lib64 -lcudart -lcublas
-	CXXFLAGS += -DDLLAMA_CUDA
-	NVCCFLAGS += -DDLLAMA_CUDA
-	DEPS += nn-cuda.o
-endif
-
 ifeq ($(OS),Windows_NT)
     LIBS += -lws2_32
 	DELETE_CMD = del /f
@@ -47,7 +37,7 @@ else
     DELETE_CMD = rm -fv
 endif
 
-.PHONY: clean dllama dllama-api
+.PHONY: clean dllama
 
 clean:
 	$(DELETE_CMD) *.o dllama dllama-* socket-benchmark mmap-buffer-* *-test *.exe
@@ -67,8 +57,6 @@ nn-cpu-ops.o: src/nn/nn-cpu-ops.cpp
 	$(CXX) $(CXXFLAGS) -c $^ -o $@
 nn-cpu.o: src/nn/nn-cpu.cpp
 	$(CXX) $(CXXFLAGS) -c $^ -o $@
-nn-cuda.o: src/nn/nn-cuda.cpp
-	$(NVCC) $(NVCCFLAGS) -c $^ -o $@
 nn-cpu-test: src/nn/nn-cpu-test.cpp nn-quants.o nn-core.o nn-executor.o llamafile-sgemm.o nn-cpu-ops.o nn-cpu.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LIBS)
 nn-cpu-ops-test: src/nn/nn-cpu-ops-test.cpp nn-quants.o nn-core.o nn-executor.o llamafile-sgemm.o nn-cpu.o
@@ -97,11 +85,6 @@ app.o: src/app.cpp
 tokenizer-test: src/tokenizer-test.cpp nn-quants.o nn-core.o llamafile-sgemm.o nn-cpu-ops.o tokenizer.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LIBS)
 dllama: src/dllama.cpp nn-quants.o nn-core.o nn-executor.o nn-network.o llamafile-sgemm.o nn-cpu-ops.o nn-cpu.o tokenizer.o llm.o app.o ${DEPS}
-	$(CXX) $(CXXFLAGS) $(filter-out %.spv, $^) -o $@ $(LIBS) $(CUDA_LIBS)
-dllama-api: src/dllama-api.cpp nn-quants.o nn-core.o nn-executor.o nn-network.o llamafile-sgemm.o nn-cpu-ops.o nn-cpu.o tokenizer.o llm.o app.o device_selector.o ${DEPS}
-	$(CXX) $(CXXFLAGS) $(filter-out %.spv, $^) -o $@ $(LIBS) $(CUDA_LIBS)
-
-device_selector.o: src/device_selector.cpp
-	$(CXX) $(CXXFLAGS) -c $^ -o $@
-inference_utils.o: src/inference_utils.cpp
-	$(CXX) $(CXXFLAGS) -c $^ -o $@
+	$(CXX) $(CXXFLAGS) $(filter-out %.spv, $^) -o $@ $(LIBS)
+dllama-api: src/dllama-api.cpp nn-quants.o nn-core.o nn-executor.o nn-network.o llamafile-sgemm.o nn-cpu-ops.o nn-cpu.o tokenizer.o llm.o app.o ${DEPS}
+	$(CXX) $(CXXFLAGS) $(filter-out %.spv, $^) -o $@ $(LIBS)

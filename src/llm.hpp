@@ -4,10 +4,6 @@
 #include "nn/nn-core.hpp"
 #include "nn/nn-executor.hpp"
 #include "nn/nn-network.hpp"
-#include <string>
-#include <vector>
-#include <map>
-#include <mutex>
 
 enum LlmHeaderKey {
     VERSION = 0,
@@ -26,7 +22,7 @@ enum LlmHeaderKey {
     WEIGHT_FLOAT_TYPE = 13,
     ROPE_SCALING_FACTOR = 14,
     ROPE_SCALING_LOW_FREQ_FACTOR = 15,
-    ROPE_SCALING_HIGH_FREQ_FACTOR = 16,
+    ROPE_SCALING_HIGH_FREQ_FACTORY = 16,
     ROPE_SCALING_ORIG_MAX_SEQ_LEN = 17,
     ROPE_TYPE = 18,
 };
@@ -52,8 +48,8 @@ typedef struct {
     NnUint nKvHeads;
     NnUint nExperts;
     NnUint nActiveExperts;
-    NnUint origSeqLen;
-    NnUint seqLen;
+    NnUint origSeqLen; // Original model context length
+    NnUint seqLen; // Limited context length by the `--max-seq-len` argument
     NnUint hiddenDim;
     LlmHiddenAct hiddenAct;
     NnUint kvDim;
@@ -62,9 +58,10 @@ typedef struct {
     NnRopeType ropeType;
     float ropeScalingFactor;
     float ropeScalingLowFreqFactor;
-    float ropeScalingHighFreqFactor;
+    float ropeScalingHighFreqFactory;
     NnUint ropeScalingOrigMaxSeqLen;
     float normEpsilon;
+
     NnFloatType weightType;
     NnFloatType syncType;
 } LlmHeader;
@@ -88,18 +85,6 @@ typedef struct {
     NnSize2D tokenEmbeddingSize;
     NnSize2D rmsNormSize;
 } LlmNet;
-
-class WeightCache {
-public:
-    static bool hasWeights(const std::string& opName, NnUint opIndex);
-    static void saveWeights(const std::string& opName, NnUint opIndex, NnSize nBytes, const NnByte* data);
-    static void loadWeights(const std::string& opName, NnUint opIndex, NnSize nBytes, NnByte* data);
-    static NnSize getWeightSize(const std::string& opName, NnUint opIndex);
-private:
-    static std::map<std::string, std::vector<NnByte>> cache;
-    static std::map<std::string, NnSize> sizes;
-    static std::mutex mutex;
-};
 
 LlmHeader loadLlmHeader(const char* path, const unsigned int maxSeqLen, NnFloatType syncType);
 void printLlmHeader(LlmHeader *header);
