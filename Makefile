@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++11 -Werror -Wformat -Werror=format-security
+CXXFLAGS = -std=c++17 -Werror -Wformat -Werror=format-security
 
 ifndef TERMUX_VERSION
 	CXXFLAGS += -march=native -mtune=native
