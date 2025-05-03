@@ -27,32 +27,44 @@ static NnUint trySliceWithFallback(NnFloatType type, NnUint maxDevices, NnUint d
     throw std::runtime_error("Failed to slice " + label + " with available devices");
 }
 
-// Corrected inline implementation
-static NnNodeConfig buildNodeConfig(NnUint deviceIndex) {
+static NnNodeConfig buildNodeConfig(NnUint deviceIndex, LlmHeader *h, LlmNet *net, NnUint totalDevices) {
     NnNodeConfigBuilder builder(deviceIndex);
 
-    NnSize2D dimVec = size2D(F_32, 1, 4096);
-    NnSize2D logitsVec = size2D(F_32, 1, 32000);
+    const NnUint dim = h->dim;
+    const NnUint kvDim = h->kvDim;
+    const NnUint vocab = h->vocabSize;
 
-    const NnUint xBuf = builder.addBuffer("X", dimVec);
-    const NnUint posBuf = builder.addBuffer("POS", size2D(F_32, 1, 1));
-    const NnUint tokBuf = builder.addBuffer("TOK", size2D(F_32, 1, 1));
-    const NnUint lgBuf = builder.addBuffer("LG", logitsVec);
+    const NnSize2D dimVec = size2D(F_32, 1, dim);
+    const NnSize2D kvVec = size2D(F_32, 1, kvDim);
+    const NnSize2D logitsVec = size2D(F_32, 1, vocab / totalDevices);
+
+    const NnUint bufferX = builder.addBuffer("x", dimVec);
+    const NnUint bufferY = builder.addBuffer("y", dimVec);
+    const NnUint bufferLG = builder.addBuffer("logits", logitsVec);
+    const NnUint invRms = builder.addBuffer("inv_rms", size2D(F_32, 1, 1));
 
     NnSegmentConfigBuilder segment;
 
-    // Token embedding
-    NnPointerConfig inputTok = pointerConfig(SRC_BUFFER, tokBuf, 0, 0);
-    NnPointerConfig outputTok = pointerConfig(SRC_BUFFER, xBuf, 0, 0);
-    segment.addOp(OP_EMBEDDING, "tok_embed", 0, inputTok, outputTok, dimVec, NnEmbeddingOpConfig{});
+    // Add real ops: cast → rms_norm → matmul → cast → matmul → cast
+    segment.addOp(OP_INV_RMS, "inv_rms", 0,
+        pointerBatchConfig(SRC_BUFFER, bufferX),
+        pointerBatchConfig(SRC_BUFFER, invRms),
+        size0(),
+        NnInvRmsOpConfig{h->normEpsilon});
 
-    // RMSNorm
-    segment.addOp(OP_RMS_NORM, "rms", 0, outputTok, outputTok, size2D(F_32, 1, 4096), NnRmsNormOpConfig{0});
+    segment.addOp(OP_RMS_NORM, "rms_norm", 0,
+        pointerBatchConfig(SRC_BUFFER, bufferX),
+        pointerBatchConfig(SRC_BUFFER, bufferY),
+        size1D(F_32, dim),
+        NnRmsNormOpConfig{invRms});
 
-    // MatMul
-    segment.addOp(OP_MATMUL, "att_q", 0, outputTok, outputTok, dimVec, NnMatmulOpConfig{});
+    segment.addOp(OP_MATMUL, "matmul_proj", 0,
+        pointerBatchConfig(SRC_BUFFER, bufferY),
+        pointerBatchConfig(SRC_BUFFER, bufferLG),
+        size2D(h->weightType, net->wclsSlice.n, net->wclsSlice.d0),
+        NnMatmulOpConfig{});
 
-    segment.addSync(0, SYNC_NODE_SLICES);
+    segment.addSync(net->logitsPipeIndex, SYNC_NODE_SLICES_EXCEPT_ROOT);
 
     builder.addSegment(segment.build());
     return builder.build();
@@ -63,8 +75,9 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint availableNodes, NnUint nBatches) {
     net.header = h;
 
     g_usedDevices.clear();
-    NnUint maxDevices = availableNodes;
+
     NnUint usedDevices = 1;
+    const NnFloatType type = h->weightType;
 
     std::vector<std::pair<std::string, NnMatmulSlice*>> layers = {
         {"w1Slice", &net.w1Slice},
@@ -77,25 +90,23 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint availableNodes, NnUint nBatches) {
         {"kSlice", &net.kSlice}
     };
 
-    usedDevices = 1;
     for (auto &[label, slice] : layers) {
         NnUint d0 = (label == "w2Slice" ? h->hiddenDim : h->dim);
         NnUint d1 = (label == "w2Slice" ? h->dim :
                      label == "kSlice" || label == "vSlice" ? h->kvDim :
                      label == "wclsSlice" ? h->vocabSize : h->hiddenDim);
-        NnUint devicesForThis = trySliceWithFallback(h->weightType, maxDevices, d0, d1, label, *slice);
-        usedDevices = std::max(usedDevices, devicesForThis);
+        NnUint n = trySliceWithFallback(type, availableNodes, d0, d1, label, *slice);
+        usedDevices = std::max(usedDevices, n);
     }
 
-    for (NnUint i = 0; i < usedDevices; ++i) {
+    for (NnUint i = 0; i < usedDevices; ++i)
         g_usedDevices.push_back("device_" + std::to_string(i));
-    }
 
     net.tokenEmbeddingSize = size2D(F_32, h->vocabSize, h->dim);
     net.rmsNormSize = size1D(F_32, h->dim);
 
-    NnKvCacheSlice kv = sliceKvCache(h->kvDim, h->seqLen, usedDevices);
-    NnMultiHeadAttSlice att = sliceMultiHeadAtt(h->nHeads, h->seqLen, usedDevices, nBatches);
+    sliceKvCache(h->kvDim, h->seqLen, usedDevices);  // memory-aware
+    sliceMultiHeadAtt(h->nHeads, h->seqLen, usedDevices, nBatches);
 
     NnNetConfigBuilder config(usedDevices, nBatches);
     net.positionPipeIndex = config.addPipe("POS", size2D(F_32, nBatches, 1));
@@ -107,7 +118,7 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint availableNodes, NnUint nBatches) {
     net.netConfig = config.build();
     net.nodeConfigs = new NnNodeConfig[usedDevices];
     for (NnUint i = 0; i < usedDevices; ++i) {
-        net.nodeConfigs[i] = buildNodeConfig(i);
+        net.nodeConfigs[i] = buildNodeConfig(i, h, &net, usedDevices);
     }
 
     return net;
