@@ -9,7 +9,12 @@
 
 using json = nlohmann::json;
 
+// Forward declare the Matmul slice struct
+struct NnMatmulSlice;
+
+// Track device assignments globally
 static std::vector<std::string> g_usedDevices;
+
 
 json getGlobalDeviceSummaryJson() {
     return json{{"used_devices", g_usedDevices}};
