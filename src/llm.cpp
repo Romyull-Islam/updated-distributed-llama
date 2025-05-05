@@ -9,11 +9,6 @@
 #include <cstring>
 #include <cmath>
 #include <cstdio>
-#include <algorithm>
-#include <sstream>
-#ifdef __linux__
-#include <sys/sysinfo.h>
-#endif
 
 // Converts enum values to strings for readable debug prints
 static const char *hiddenActToString(LlmHiddenAct act) {
@@ -33,125 +28,22 @@ static const char *archTypeToString(LlmArchType type) {
     throw std::runtime_error("Unsupported architecture");
 }
 
-// Estimates available memory on the first device (in bytes)
-static size_t getAvailableMemory() {
-#ifdef __linux__
-    struct sysinfo memInfo;
-    if (sysinfo(&memInfo) == 0) {
-        return (size_t)(memInfo.totalram * memInfo.mem_unit * 0.9); // 90% of total RAM
-    }
-#endif
-#ifdef _WIN32
-    return 16ULL * 1024 * 1024 * 1024; // Fallback to 16 GB
-#else
-    return 16ULL * 1024 * 1024 * 1024; // Fallback to 16 GB
-#endif
-}
-
-// Estimates memory usage for inference (in bytes) with safety margin
-static size_t estimateMemoryUsage(LlmHeader *h, NnUint nNodes, NnUint nBatches, NnFloatType bufferFloatType) {
+// Estimates memory usage for inference (in bytes)
+static size_t estimateMemoryUsage(LlmHeader *h, NnUint nNodes, NnUint nBatches) {
     size_t memory = 0;
-    // Weights (embedding + layers + final, Q4.0 approximation)
-    memory += h->vocabSize * h->dim * sizeof(float) / 2; // Token embedding
-    memory += h->nLayers * (
-        h->dim * h->dim + h->dim * h->kvDim * 2 + h->dim * h->dim + // Attention (q, k, v, wo)
-        h->dim * h->hiddenDim * 2 + h->hiddenDim * h->dim + // Feedforward (w1, w3, w2)
-        h->dim * 2 // RMS norms
-    ) * sizeof(float) / 2;
-    memory += h->dim * h->vocabSize * sizeof(float) / 2; // Classifier
+    // Weights (embedding + layers + final)
+    memory += h->vocabSize * h->dim * sizeof(float) / 2; // Q4.0 approximation
+    memory += h->nLayers * (h->dim * h->dim + h->dim * h->kvDim * 2 + h->dim * h->dim +
+                            h->dim * h->hiddenDim * 2 + h->hiddenDim * h->dim) * sizeof(float) / 2;
+    memory += h->dim * h->vocabSize * sizeof(float) / 2;
     // KV Cache
     size_t kvDim = (h->dim * h->nKvHeads) / h->nHeads;
     memory += h->nLayers * 2 * h->seqLen * kvDim * sizeof(float);
-    // Activations (per batch, q80 = 1 byte per element)
-    size_t bufferSize = bufferFloatType == F_Q80 ? 1 : sizeof(float);
-    memory += nBatches * (
-        h->dim + h->kvDim + h->kvDim + // q, k, v
-        h->hiddenDim * 2 + // d, l
-        h->dim // y, yq, etc.
-    ) * bufferSize * 5; // Approximate multiple buffers
+    // Activations (approximate, per batch)
+    memory += nBatches * (h->dim + h->hiddenDim + h->dim * h->nHeads / h->nKvHeads) * sizeof(float) * 5; // q, k, v, d, l
     // Divide by nNodes (distribute weights and KV cache)
     memory /= nNodes;
-    // Apply 20% safety margin
-    memory = (size_t)(memory * 1.2);
     return memory;
-}
-
-// Determines minimum nodes needed for memory allocation
-static NnUint allocateMemory(size_t memoryRequired, const std::vector<size_t>& deviceMemories, NnUint maxNodes) {
-    // Sort devices by capacity (descending)
-    std::vector<size_t> sortedMemories = deviceMemories;
-    std::sort(sortedMemories.begin(), sortedMemories.end(), std::greater<size_t>());
-    
-    size_t remaining = memoryRequired;
-    NnUint nNodes = 0;
-    
-    // Greedy allocation: Use highest-capacity devices first
-    for (size_t memory : sortedMemories) {
-        if (nNodes >= maxNodes || remaining == 0) break;
-        nNodes++;
-        size_t allocated = std::min(remaining, memory);
-        remaining -= allocated;
-    }
-    
-    if (remaining > 0) {
-        throw std::runtime_error("Insufficient memory even with maximum devices");
-    }
-    
-    return nNodes;
-}
-
-// Gets memory sizes for first device and workers
-static std::vector<size_t> getWorkerMemories(const std::vector<std::string>& workers) {
-    std::vector<size_t> memories;
-    // First device memory
-    memories.push_back(getAvailableMemory());
-    
-    // Worker memories
-    size_t defaultMemory = 8ULL * 1024 * 1024 * 1024; // 8 GB default per worker
-    if (workers.size() > 1) {
-        const char* env = std::getenv("LLM_WORKER_MEMORY");
-        if (env) {
-            std::string memoryStr(env);
-            std::stringstream ss(memoryStr);
-            std::string token;
-            std::vector<size_t> parsedMemories;
-            while (std::getline(ss, token, ',')) {
-                try {
-                    size_t gb = std::stoul(token);
-                    if (gb == 0) throw std::invalid_argument("Zero memory not allowed");
-                    parsedMemories.push_back(gb * 1024ULL * 1024 * 1024); // GB to bytes
-                } catch (...) {
-                    fprintf(stderr, "⚠️ Invalid LLM_WORKER_MEMORY value: %s\n", token.c_str());
-                    throw std::runtime_error("Failed to parse LLM_WORKER_MEMORY");
-                }
-            }
-            // Check if more memories than workers
-            if (parsedMemories.size() > workers.size()) {
-                fprintf(stderr, "⚠️ LLM_WORKER_MEMORY specifies %zu memory sizes (%s), but only %zu worker devices provided\n",
-                        parsedMemories.size(), memoryStr.c_str(), workers.size());
-                // Use only the first workers.size() memories
-                for (size_t i = 0; i < workers.size(); i++) {
-                    memories.push_back(parsedMemories[i]);
-                }
-                return memories;
-            }
-            // Check if fewer memories than workers
-            if (parsedMemories.size() < workers.size()) {
-                fprintf(stderr, "⚠️ LLM_WORKER_MEMORY count (%zu) does not match worker count (%zu)\n",
-                        parsedMemories.size(), workers.size());
-                throw std::runtime_error("LLM_WORKER_MEMORY count mismatch");
-            }
-            // Exact match: use all parsed memories
-            memories.insert(memories.end(), parsedMemories.begin(), parsedMemories.end());
-            return memories;
-        }
-    }
-    
-    // Default: 8 GB per worker
-    for (size_t i = 0; i < workers.size(); i++) {
-        memories.push_back(defaultMemory);
-    }
-    return memories;
 }
 
 // Prints all key fields from model header for debugging
@@ -235,7 +127,7 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
             case ROPE_THETA: header.ropeTheta = (float)val; break;
             case ROPE_SCALING_FACTOR: header.ropeScalingFactor = (float)val; break;
             case ROPE_SCALING_LOW_FREQ_FACTOR: header.ropeScalingLowFreqFactor = (float)val; break;
-            case ROPE_SCALING_HIGH_FREQ_FACTOR: header.ropeScalingHighFreqFactor = (float)val; break;
+            case ROPE_SCALING_HIGH_FREQ_FACTORY: header.ropeScalingHighFreqFactory = (float)val; break;
             case ROPE_SCALING_ORIG_MAX_SEQ_LEN: header.ropeScalingOrigMaxSeqLen = val; break;
             default:
                 printf("⚠️ Skipping unknown header key: %d\n", key);
@@ -244,7 +136,13 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
     }
 
     if (header.weightType == F_UNK) throw std::runtime_error("Weight type not found in header");
-    if (header.version != 1) throw std::runtime_error("Unsupported version");
+    if (header.version < 1) {
+        printf("⚠️ Warning: Model version %d is lower than expected (1)\n", header.version);
+        throw std::runtime_error("Unsupported version");
+    } else if (header.version > 1) {
+        printf("⚠️ Warning: Model version %d is higher than expected (1), proceeding with caution\n", header.version);
+    }
+
     if (header.dim % header.nHeads != 0) throw std::runtime_error("Dim must be divisible by nHeads");
     if (header.nHeads % header.nKvHeads != 0) throw std::runtime_error("nHeads must be divisible by nKvHeads");
 
@@ -264,24 +162,20 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
 }
 
 // Builds network with minimal device usage
-LlmNet buildLlmNet(LlmHeader *h, NnUint maxNodes, NnUint nBatches, NnFloatType bufferFloatType, const std::vector<std::string>& workers) {
+LlmNet buildLlmNet(LlmHeader *h, NnUint maxNodes, NnUint nBatches) {
     LlmNet n;
-    std::vector<size_t> deviceMemories = getWorkerMemories(workers);
+    NnUint nNodes = 1; // Start with one device
+    const size_t MAX_MEMORY_PER_DEVICE = 8ULL * 1024 * 1024 * 1024; // 8 GB
 
-    if (deviceMemories.size() > maxNodes) {
-        deviceMemories.resize(maxNodes);
+    // Check if one device is sufficient
+    size_t memoryRequired = estimateMemoryUsage(h, nNodes, nBatches);
+    if (memoryRequired > MAX_MEMORY_PER_DEVICE && maxNodes > 1) {
+        nNodes = 2; // Try two devices
+        memoryRequired = estimateMemoryUsage(h, nNodes, nBatches);
+        printf("💡 Using %u devices (memory per device: ~%zu MB)\n", nNodes, memoryRequired / (1024 * 1024));
+    } else {
+        printf("💡 Using 1 device (memory: ~%zu MB)\n", memoryRequired / (1024 * 1024));
     }
-
-    // Estimate memory
-    size_t memoryRequired = estimateMemoryUsage(h, 1, nBatches, bufferFloatType);
-    NnUint nNodes = allocateMemory(memoryRequired, deviceMemories, maxNodes);
-
-    printf("💡 Using %u device(s) (memory required: ~%zu MB, first device: %zu MB, workers: [",
-           nNodes, memoryRequired / (1024 * 1024), deviceMemories[0] / (1024 * 1024));
-    for (size_t i = 1; i < nNodes; i++) {
-        printf("%zu MB%s", deviceMemories[i] / (1024 * 1024), i < nNodes - 1 ? ", " : "");
-    }
-    printf("])\n");
 
     n.tokenEmbeddingSize = size2D(h->weightType, h->vocabSize, h->dim);
     n.rmsNormSize = size1D(F_32, h->dim);
@@ -290,15 +184,14 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint maxNodes, NnUint nBatches, NnFloatType b
     NnMultiHeadAttSlice multiHeadAttSlice = sliceMultiHeadAtt(h->nHeads, h->seqLen, nNodes, nBatches);
 
     // Prioritize first device for complex layers (attention, feedforward)
-    float firstDeviceBias = nNodes > 1 ? 0.9 : 1.0; // 90% to first device if multiple devices
-    n.qSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->dim, firstDeviceBias);
-    n.kSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->kvDim, firstDeviceBias);
-    n.vSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->kvDim, firstDeviceBias);
-    n.woSlice = sliceColMatmul(h->weightType, nNodes, h->dim, h->dim, firstDeviceBias);
-    n.w1Slice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->hiddenDim, firstDeviceBias);
-    n.w2Slice = sliceColMatmul(h->weightType, nNodes, h->hiddenDim, h->dim, firstDeviceBias);
-    n.w3Slice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->hiddenDim, firstDeviceBias);
-    n.wclsSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->vocabSize); // Even split for classifier
+    n.qSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->dim, nNodes > 1 ? 0.75 : 1.0); // 75% to first device if nNodes > 1
+    n.kSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->kvDim, nNodes > 1 ? 0.75 : 1.0);
+    n.vSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->kvDim, nNodes > 1 ? 0.75 : 1.0);
+    n.woSlice = sliceColMatmul(h->weightType, nNodes, h->dim, h->dim, nNodes > 1 ? 0.75 : 1.0);
+    n.w1Slice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->hiddenDim, nNodes > 1 ? 0.75 : 1.0);
+    n.w2Slice = sliceColMatmul(h->weightType, nNodes, h->hiddenDim, h->dim, nNodes > 1 ? 0.75 : 1.0);
+    n.w3Slice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->hiddenDim, nNodes > 1 ? 0.75 : 1.0);
+    n.wclsSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->vocabSize);
 
     NnNetConfigBuilder netBuilder(nNodes, nBatches);
     n.positionPipeIndex = netBuilder.addPipe("POS", size2D(F_32, nBatches, 1));
@@ -418,16 +311,16 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint maxNodes, NnUint nBatches, NnFloatType b
                 pointerBatchConfig(SRC_BUFFER, qBufferIndex),
                 size0(),
                 NnRopeLlamaOpConfig{true, n.positionPipeIndex, ropeCacheBufferIndex,
-                    h->ropeScalingFactor, h->ropeScalingLowFreqFactor, h->ropeScalingHighFreqFactory,
-                    h->ropeScalingOrigMaxSeqLen, ropeSlice});
+                    h->ropeScalingFactor, h->ropeScalingLowFreqFactor, h->ropeScalingHighFreqFactory, h->ropeScalingOrigMaxSeqLen,
+                    ropeSlice});
             att.addOp(
                 OP_ROPE_LLAMA, "block_rope_k", layerIndex,
                 pointerBatchConfig(SRC_BUFFER, kTempBufferIndex),
                 pointerBatchConfig(SRC_BUFFER, kTempBufferIndex),
                 size0(),
                 NnRopeLlamaOpConfig{false, n.positionPipeIndex, ropeCacheBufferIndex,
-                    h->ropeScalingFactor, h->ropeScalingLowFreqFactor, h->ropeScalingHighFreqFactory,
-                    h->ropeScalingOrigMaxSeqLen, ropeSlice});
+                    h->ropeScalingFactor, h->ropeScalingLowFreqFactor, h->ropeScalingHighFreqFactory, h->ropeScalingOrigMaxSeqLen,
+                    ropeSlice});
             att.addOp(
                 OP_SHIFT, "block_shift_k", layerIndex,
                 pointerBatchConfig(SRC_BUFFER, kTempBufferIndex),
