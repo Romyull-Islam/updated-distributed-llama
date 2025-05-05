@@ -118,7 +118,13 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
     }
 
     if (header.weightType == F_UNK) throw std::runtime_error("Weight type not found in header");
-    if (header.version != 1) throw std::runtime_error("Unsupported version");
+    if (header.version < 1) {
+        printf("⚠️ Warning: Model version %d is lower than expected (1)\n", header.version);
+        throw std::runtime_error("Unsupported version");
+    } else if (header.version > 1) {
+        printf("⚠️ Warning: Model version %d is higher than expected (1), proceeding with caution\n", header.version);
+    }
+
     if (header.dim % header.nHeads != 0) throw std::runtime_error("Dim must be divisible by nHeads");
     if (header.nHeads % header.nKvHeads != 0) throw std::runtime_error("nHeads must be divisible by nKvHeads");
 
