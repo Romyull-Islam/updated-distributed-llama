@@ -6,67 +6,62 @@
 #include "llm.hpp"
 #include <stdexcept>
 #include <vector>
-#include <string>
 #include <cstring>
 #include <cmath>
 #include <cstdio>
 
+// ✅ Define empty config for softmax to match nn-core.hpp pattern
+typedef struct {
+    // empty
+} NnSoftmaxOpConfig;
+
 // ✅ Converts enum values to strings for readable debug prints
-const char *hiddenActToString(LlmHiddenAct act) {
-    switch (act) {
-        case HIDDEN_ACT_GELU: return "GELU";
-        case HIDDEN_ACT_SILU: return "SiLU";
-        default: return "Unknown";
-    }
+static const char *hiddenActToString(LlmHiddenAct act) {
+    if (act == HIDDEN_ACT_GELU) return "GELU";
+    if (act == HIDDEN_ACT_SILU) return "SiLU";
+    throw std::runtime_error("Unsupported hidden act");
 }
 
-const char *ropeTypeToString(NnRopeType type) {
-    switch (type) {
-        case ROPE_LLAMA: return "LLaMA";
-        case ROPE_LLAMA3_1: return "LLaMA3.1";
-        default: return "Unknown";
-    }
+static const char *ropeTypeToString(NnRopeType type) {
+    if (type == ROPE_LLAMA) return "LLaMA";
+    if (type == ROPE_LLAMA3_1) return "LLaMA3.1";
+    throw std::runtime_error("Unsupported rope type");
 }
 
-const char *archTypeToString(LlmArchType type) {
-    switch (type) {
-        case LLAMA: return "LLaMA";
-        default: return "Unknown";
-    }
+static const char *archTypeToString(LlmArchType type) {
+    if (type == LLAMA) return "LLaMA";
+    throw std::runtime_error("Unsupported architecture");
 }
 
 // ✅ Prints all key fields from model header for debugging
 void printLlmHeader(LlmHeader *header) {
-    printf("🧠 LLM Header\n");
-    printf("  Magic: %u\n", header->magic);
-    printf("  Version: %u\n", header->version);
-    printf("  FileSize: %zu\n", header->fileSize);
-    printf("  HeaderSize: %zu\n", header->headerSize);
-    printf("  Arch: %s\n", archTypeToString(header->archType));
-    printf("  HiddenAct: %s\n", hiddenActToString(header->hiddenAct));
-    printf("  Dim: %u\n", header->dim);
-    printf("  KvDim: %u\n", header->kvDim);
-    printf("  HiddenDim: %u\n", header->hiddenDim);
-    printf("  VocabSize: %u\n", header->vocabSize);
-    printf("  nLayers: %u\n", header->nLayers);
-    printf("  nHeads: %u\n", header->nHeads);
-    printf("  nKvHeads: %u\n", header->nKvHeads);
-    printf("  OrigSeqLen: %u\n", header->origSeqLen);
-    printf("  SeqLen: %u\n", header->seqLen);
-    printf("  NormEpsilon: %f\n", header->normEpsilon);
-    printf("  WeightType: %u\n", header->weightType);
-    printf("  RopeType: %s\n", ropeTypeToString(header->ropeType));
-    printf("  RopeTheta: %.0f\n", header->ropeTheta);
+    printf("🧠 Arch: %s\n", archTypeToString(header->archType));
+    printf("🧠 HiddenAct: %s\n", hiddenActToString(header->hiddenAct));
+    printf("🧠 Dim: %u\n", header->dim);
+    printf("🧠 KvDim: %u\n", header->kvDim);
+    printf("🧠 HiddenDim: %u\n", header->hiddenDim);
+    printf("🧠 VocabSize: %u\n", header->vocabSize);
+    printf("🧠 nLayers: %u\n", header->nLayers);
+    printf("🧠 nHeads: %u\n", header->nHeads);
+    printf("🧠 nKvHeads: %u\n", header->nKvHeads);
+    if (header->seqLen != header->origSeqLen) {
+        printf("🧠 OrigSeqLen: %u\n", header->origSeqLen);
+    }
+    printf("🧠 SeqLen: %u\n", header->seqLen);
+    printf("🧠 NormEpsilon: %f\n", header->normEpsilon);
+    printf("🧠 RopeType: %s\n", ropeTypeToString(header->ropeType));
+    printf("🧠 RopeTheta: %.0f\n", header->ropeTheta);
     if (header->ropeType == ROPE_LLAMA3_1) {
-        printf("  RopeScalingFactor: %f\n", header->ropeScalingFactor);
-        printf("  RopeScalingLowFreqFactor: %f\n", header->ropeScalingLowFreqFactor);
-        printf("  RopeScalingHighFreqFactory: %f\n", header->ropeScalingHighFreqFactory);
-        printf("  RopeScalingOrigMaxSeqLen: %u\n", header->ropeScalingOrigMaxSeqLen);
+        printf("🧠 RopeScaling: f=%.1f, l=%.1f, h=%.1f, o=%d\n",
+            header->ropeScalingFactor,
+            header->ropeScalingLowFreqFactor,
+            header->ropeScalingHighFreqFactor,
+            header->ropeScalingOrigMaxSeqLen);
     }
 }
 
 // ✅ Fills rope cache for LLaMA and LLaMA 3.1 models
-static void fullfillRopeLlama3Cache(const NnRopeLlamaOpConfig *config, float *cache) {
+void fullfillRopeLlama3Cache(const NnRopeLlamaOpConfig *config, float *cache) {
     const NnUint dim0 = config->isQ ? config->slice.qDim0 : config->slice.kvDim0;
     if (dim0 % 2 != 0) throw std::runtime_error("RoPE dimension must be even");
     const NnUint dim0Half = dim0 / 2;
@@ -75,9 +70,10 @@ static void fullfillRopeLlama3Cache(const NnRopeLlamaOpConfig *config, float *ca
     const bool isLlama3_1 = config->ropeScalingFactor > 0.0f;
     const float scalingFactor = isLlama3_1 ? config->ropeScalingFactor : 1.0f;
     const float lowFreqFactor = isLlama3_1 ? config->ropeScalingLowFreqFactor : 1.0f;
-    const float highFreqFactor = isLlama3_1 ? config->ropeScalingHighFreqFactory : 1.0f;
+    const float highFreqFactor = isLlama3_1 ? config->ropeScalingHighFreqFactor : 1.0f;
+    const NnUint seqLen = config->slice.seqLen;
 
-    for (NnUint pos = 0; pos < config->seqLen; ++pos) {
+    for (NnUint pos = 0; pos < seqLen; ++pos) {
         for (NnUint i = 0; i < dim0Half; ++i) {
             float freq = (float)i / (float)dim0Half;
             float scaledFreq = freq;
@@ -89,7 +85,7 @@ static void fullfillRopeLlama3Cache(const NnRopeLlamaOpConfig *config, float *ca
                     scaledFreq *= highFreqFactor;
                 }
             }
-            float theta = (float)pos * ropeTheta * scaledFreq;
+            float theta = (float)pos / ropeTheta * scaledFreq;
             NnUint idx = pos * sliceDim + i * 2;
             cache[idx] = cosf(theta);
             cache[idx + 1] = sinf(theta);
@@ -105,16 +101,20 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
     header.hiddenAct = HIDDEN_ACT_SILU;
     header.ropeType = ROPE_LLAMA;
     header.ropeTheta = 10000.0f;
-    header.syncType = syncType;
-    header.magic = 0xA00ABCD;
+    header.ropeScalingFactor = 1.0f;
+    header.normEpsilon = 1e-5f;
 
     std::unique_ptr<FILE, int (*)(FILE *)> fdPtr(fopen(path, "rb"), fclose);
     FILE *fd = fdPtr.get();
     if (!fd) throw std::runtime_error("Cannot open model file");
 
     int magic;
-    if (fread(&magic, sizeof(int), 1, fd) != 1) throw std::runtime_error("Cannot read magic value");
-    if (magic != header.magic) throw std::runtime_error("Unsupported magic number");
+    if (fread(&magic, sizeof(int), 1, fd) != 1)
+        throw std::runtime_error("Cannot read magic value");
+    if (magic == 0xABCD00 || magic == 0xABCD01)
+        throw std::runtime_error("Old model format is not supported");
+    if (magic != 0xA00ABCD)
+        throw std::runtime_error("Unsupported magic number");
 
     if (fread(&header.headerSize, sizeof(int), 1, fd) != 1)
         throw std::runtime_error("Cannot read header size");
@@ -142,10 +142,10 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
             case ROPE_THETA: header.ropeTheta = (float)val; break;
             case ROPE_SCALING_FACTOR: header.ropeScalingFactor = (float)val; break;
             case ROPE_SCALING_LOW_FREQ_FACTOR: header.ropeScalingLowFreqFactor = (float)val; break;
-            case ROPE_SCALING_HIGH_FREQ_FACTORY: header.ropeScalingHighFreqFactory = (float)val; break;
+            case ROPE_SCALING_HIGH_FREQ_FACTOR: header.ropeScalingHighFreqFactor = (float)val; break;
             case ROPE_SCALING_ORIG_MAX_SEQ_LEN: header.ropeScalingOrigMaxSeqLen = val; break;
-            case NORM_EPSILON: header.normEpsilon = (float)val; break;
-            default: break;
+            case RMSNORM_EPSILON: header.normEpsilon = (float)val; break;
+            default: throw std::runtime_error("Unsupported header key");
         }
     }
 
@@ -159,8 +159,8 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
         header.seqLen = maxSeqLen;
     header.headSize = header.dim / header.nHeads;
     header.kvDim = (header.dim * header.nKvHeads) / header.nHeads;
+    header.syncType = syncType;
 
-    // Compute file size using fseek/ftell
     if (fseek(fd, 0, SEEK_END) != 0) throw std::runtime_error("Cannot seek to end of file");
     header.fileSize = ftell(fd);
     if (header.fileSize == -1) throw std::runtime_error("Cannot determine file size");
@@ -170,11 +170,11 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
 }
 
 // ✅ Memory-aware slicing for adaptive load distribution
-static NnUint trySliceWithFallback(NnFloatType type, NnUint maxDevices, NnUint d0, NnUint d1, const char *label, NnMatmulSlice *out) {
-    NnSize mem = printNodeRequiredMemory(d0 * d1 * getBytes(type));
+static NnUint trySliceWithFallback(NnFloatType type, NnUint maxDevices, NnUint d0, NnUint d1, const char *label, NnRowMatmulSlice *out) {
+    NnSize mem = d0 * d1 * getBytes(type, d0 * d1);
     for (NnUint n = 1; n <= maxDevices; ++n) {
-        NnMatmulSlice slice = sliceRowMatmul(type, n, d0, d1);
-        if (slice.totalMemory <= mem) {
+        NnRowMatmulSlice slice = sliceRowMatmul(type, n, d0, d1);
+        if (slice.size.nBytes <= mem) {
             *out = slice;
             return n;
         }
@@ -200,50 +200,306 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint maxDevices, NnUint nBatches) {
     used = std::max(used, trySliceWithFallback(h->weightType, maxDevices, h->dim, h->hiddenDim, "w3", &n.w3Slice));
 
     // 🧠 Cache + attention slice definitions
-    NnKvCacheSlice kv = sliceKvCache(h->kvDim, h->seqLen, used);
-    NnMultiHeadAttSlice att = sliceMultiHeadAtt(h->nHeads, h->seqLen, used, nBatches);
+    NnKvCacheSlice kvCacheSlice = sliceKvCache(h->kvDim, h->seqLen, used);
+    NnMultiHeadAttSlice multiHeadAttSlice = sliceMultiHeadAtt(h->nHeads, h->seqLen, used, nBatches);
 
     // 🧠 Build network graph
-    NnNetConfigBuilder net(used, nBatches);
-    n.positionPipeIndex = net.addPipe("POS", size2D(F_32, nBatches, 1));
-    n.tokenPipeIndex = net.addPipe("TOK", size2D(F_32, nBatches, 1));
-    n.xPipeIndex = net.addPipe("X", size2D(F_32, nBatches, h->dim));
-    n.logitsPipeIndex = net.addPipe("LG", size2D(F_32, nBatches, h->vocabSize));
-    net.addPreSync(n.positionPipeIndex);
+    NnNetConfigBuilder netBuilder(used, nBatches);
+    n.positionPipeIndex = netBuilder.addPipe("POS", size2D(F_32, nBatches, 1));
+    n.tokenPipeIndex = netBuilder.addPipe("TOK", size2D(F_32, nBatches, 1));
+    n.xPipeIndex = netBuilder.addPipe("X", size2D(F_32, nBatches, h->dim));
+    n.logitsPipeIndex = netBuilder.addPipe("LG", size2D(F_32, nBatches, h->vocabSize));
+    const NnUint zqPipeIndex = netBuilder.addPipe("ZQ", size2D(h->syncType, nBatches, h->dim * used));
 
-    // 🧠 Build per-node execution segments with real ops
-    n.nodeConfigs = new NnNodeConfig[used];
-    for (NnUint i = 0; i < used; ++i) {
-        NnNodeConfigBuilder builder(i);
-        builder.addBuffer("X", size2D(F_32, nBatches, h->dim));
-
-        NnSegmentConfigBuilder seg;
-        seg.addOp(NN_OP_EMBEDDING);                                      // Token embedding
-        seg.addOp(NN_OP_RMSNORM, h->normEpsilon);                        // RMSNorm
-        seg.addMatMul(n.qSlice.slices[i]);                               // Attention Q
-        seg.addMatMul(n.kSlice.slices[i]);                               // Attention K
-        seg.addMatMul(n.vSlice.slices[i]);                               // Attention V
-        seg.addOp(NN_OP_ROPE_LLAMA);                                     // RoPE (handles LLaMA and LLaMA3.1)
-        seg.addOp(NN_OP_ATTENTION, att.blocks[i]);                       // Multi-head attention
-        seg.addMatMul(n.woSlice.slices[i]);                              // Attention output
-        seg.addOp(NN_OP_MERGE_ADD);                                      // Residual connection
-        seg.addOp(NN_OP_RMSNORM, h->normEpsilon);                        // Norm again
-        seg.addMatMul(n.w1Slice.slices[i]);                              // Feedforward projection
-        seg.addOp(h->hiddenAct == HIDDEN_ACT_GELU ? NN_OP_GELU : NN_OP_SILU); // Activation
-        seg.addMatMul(n.w3Slice.slices[i]);                              // Gated projection
-        seg.addOp(NN_OP_MUL);                                            // Element-wise multiplication
-        seg.addMatMul(n.w2Slice.slices[i]);                              // Final FF matmul
-        seg.addOp(NN_OP_MERGE_ADD);                                      // Residual connection
-        seg.addOp(NN_OP_RMSNORM, h->normEpsilon);                        // Final norm
-        seg.addMatMul(n.wclsSlice.slices[i]);                            // Classifier output
-        seg.addOp(NN_OP_SOFTMAX);                                        // Softmax for logits
-        builder.addSegment(seg.build());
-
-        n.nodeConfigs[i] = builder.build();
-    }
+    netBuilder.addPreSync(n.positionPipeIndex);
 
     n.header = h;
-    n.netConfig = net.build();
+    n.netConfig = netBuilder.build();
+    n.nodeConfigs = new NnNodeConfig[used];
+
+    for (NnUint nodeIndex = 0; nodeIndex < used; nodeIndex++) {
+        NnRopeSlice ropeSlice = sliceRope(h->dim, h->kvDim, h->nKvHeads, used, h->seqLen, h->headSize, h->ropeTheta, nodeIndex);
+        NnNodeConfigBuilder nodeBuilder(nodeIndex);
+
+        const NnUint xBufferIndex = nodeBuilder.addBuffer("x", size2D(F_32, nBatches, h->dim));
+        const NnUint yBufferIndex = nodeBuilder.addBuffer("y", size2D(F_32, nBatches, h->dim));
+        const NnUint yqBufferIndex = h->syncType == F_32
+            ? yBufferIndex
+            : nodeBuilder.addBuffer("yq", size2D(h->syncType, nBatches, h->dim));
+        const NnUint yqSliceIndex = nodeBuilder.addBuffer("yq_slice", size2D(h->syncType, nBatches, h->dim / used));
+
+        const NnUint qBufferIndex = nodeBuilder.addBuffer("q", size2D(F_32, nBatches, n.qSlice.d0));
+        const NnUint kTempBufferIndex = nodeBuilder.addBuffer("k_temp", size2D(F_32, nBatches, n.kSlice.d0));
+        const NnUint vTempBufferIndex = nodeBuilder.addBuffer("v_temp", size2D(F_32, nBatches, n.vSlice.d0));
+
+        const NnUint dBufferIndex = nodeBuilder.addBuffer("d", size2D(F_32, nBatches, n.w1Slice.d0));
+        const NnUint dqBufferIndex = h->syncType == F_32
+            ? dBufferIndex
+            : nodeBuilder.addBuffer("dq", size2D(h->syncType, nBatches, n.w1Slice.d0));
+        const NnUint lBufferIndex = nodeBuilder.addBuffer("l", size2D(F_32, nBatches, n.w3Slice.d0));
+        const NnUint invRmsBufferIndex = nodeBuilder.addBuffer("inv_rms", size2D(F_32, nBatches, 1));
+        const NnUint ropeCacheBufferIndex = nodeBuilder.addBuffer("rope_cache", ropeSlice.cacheSize);
+        const NnUint attBufferIndex = nodeBuilder.addBuffer("att", multiHeadAttSlice.attSize);
+        const NnUint logitsSliceBufferIndex = nodeBuilder.addBuffer("lg", size2D(F_32, nBatches, h->vocabSize / used));
+
+        NnSegmentConfigBuilder start;
+        if (nodeIndex == 0) {
+            start.addOp(
+                OP_EMBEDDING, "embedding", 0,
+                pointerBatchConfig(SRC_PIPE, n.tokenPipeIndex),
+                pointerBatchConfig(SRC_PIPE, n.xPipeIndex),
+                n.tokenEmbeddingSize,
+                NnEmbeddingOpConfig{});
+        }
+        start.addSync(n.xPipeIndex, SYNC_WITH_ROOT);
+        nodeBuilder.addSegment(start.build());
+
+        for (NnUint layerIndex = 0; layerIndex < h->nLayers; layerIndex++) {
+            const NnUint kBufferIndex = nodeBuilder.addBuffer("k", kvCacheSlice.keySize);
+            const NnUint vBufferIndex = nodeBuilder.addBuffer("v", kvCacheSlice.valueSize);
+
+            NnSegmentConfigBuilder att;
+            NnSegmentConfigBuilder ff;
+
+            // Attention segment
+            if (layerIndex == 0) {
+                att.addOp(
+                    OP_CAST, "block_cast_x", layerIndex,
+                    pointerBatchConfig(SRC_PIPE, n.xPipeIndex),
+                    pointerBatchConfig(SRC_BUFFER, xBufferIndex),
+                    size0(),
+                    NnCastOpCodeConfig{});
+            } else {
+                att.addOp(
+                    OP_MERGE_ADD, "block_merge_add", layerIndex,
+                    pointerBatchConfig(SRC_PIPE, zqPipeIndex),
+                    pointerBatchConfig(SRC_BUFFER, xBufferIndex),
+                    size0(),
+                    NnMergeAddOpCodeConfig{});
+            }
+
+            att.addOp(
+                OP_INV_RMS, "block_inv_rms_0", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, xBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, invRmsBufferIndex),
+                size0(),
+                NnInvRmsOpConfig{h->normEpsilon});
+            att.addOp(
+                OP_RMS_NORM, "block_rms_norm_0", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, xBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, yBufferIndex),
+                n.rmsNormSize,
+                NnRmsNormOpConfig{invRmsBufferIndex});
+            if (yBufferIndex != yqBufferIndex) {
+                att.addOp(
+                    OP_CAST, "block_cast_y", layerIndex,
+                    pointerBatchConfig(SRC_BUFFER, yBufferIndex),
+                    pointerBatchConfig(SRC_BUFFER, yqBufferIndex),
+                    size0(),
+                    NnCastOpCodeConfig{});
+            }
+            att.addOp(
+                OP_MATMUL, "block_matmul_q", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, yqBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, qBufferIndex),
+                size2D(h->weightType, n.qSlice.n, n.qSlice.d0),
+                NnMatmulOpConfig{});
+            att.addOp(
+                OP_MATMUL, "block_matmul_k", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, yqBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, kTempBufferIndex),
+                size2D(h->weightType, n.kSlice.n, n.kSlice.d0),
+                NnMatmulOpConfig{});
+            att.addOp(
+                OP_MATMUL, "block_matmul_v", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, yqBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, vTempBufferIndex),
+                size2D(h->weightType, n.vSlice.n, n.vSlice.d0),
+                NnMatmulOpConfig{});
+            att.addOp(
+                OP_ROPE_LLAMA, "block_rope_q", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, qBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, qBufferIndex),
+                size0(),
+                NnRopeLlamaOpConfig{true, n.positionPipeIndex, ropeCacheBufferIndex,
+                    h->ropeScalingFactor, h->ropeScalingLowFreqFactor, h->ropeScalingHighFreqFactor, h->ropeScalingOrigMaxSeqLen,
+                    ropeSlice});
+            att.addOp(
+                OP_ROPE_LLAMA, "block_rope_k", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, kTempBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, kTempBufferIndex),
+                size0(),
+                NnRopeLlamaOpConfig{false, n.positionPipeIndex, ropeCacheBufferIndex,
+                    h->ropeScalingFactor, h->ropeScalingLowFreqFactor, h->ropeScalingHighFreqFactor, h->ropeScalingOrigMaxSeqLen,
+                    ropeSlice});
+            att.addOp(
+                OP_SHIFT, "block_shift_k", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, kTempBufferIndex),
+                pointerRawConfig(SRC_BUFFER, kBufferIndex),
+                size0(),
+                NnShiftOpCodeConfig{n.positionPipeIndex});
+            att.addOp(
+                OP_SHIFT, "block_shift_v", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, vTempBufferIndex),
+                pointerRawConfig(SRC_BUFFER, vBufferIndex),
+                size0(),
+                NnShiftOpCodeConfig{n.positionPipeIndex});
+            att.addOp(
+                OP_MULTIHEAD_ATT, "block_multihead_att", layerIndex,
+                pointerBatchedSliceConfig(SRC_BUFFER, yBufferIndex),
+                pointerBatchedSliceConfig(SRC_BUFFER, yBufferIndex),
+                size0(),
+                NnMultiHeadAttOpConfig{
+                    multiHeadAttSlice.nHeads, multiHeadAttSlice.nHeads0,
+                    h->nKvHeads, h->headSize, h->seqLen, n.qSlice.d0, kvCacheSlice.kvDim0,
+                    n.positionPipeIndex, qBufferIndex, kBufferIndex, vBufferIndex, attBufferIndex});
+            att.addOp(
+                OP_CAST, "block_cast_y2", layerIndex,
+                pointerBatchedSliceConfig(SRC_BUFFER, yBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, yqSliceIndex),
+                size0(),
+                NnCastOpCodeConfig{});
+            att.addOp(
+                OP_MATMUL, "block_matmul_wo", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, yqSliceIndex),
+                pointerBatchConfig(SRC_BUFFER, yBufferIndex),
+                size2D(h->weightType, n.woSlice.n, n.woSlice.d0),
+                NnMatmulOpConfig{});
+            att.addOp(
+                OP_CAST, "block_cast_d", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, yBufferIndex),
+                pointerBatchedSliceConfig(SRC_PIPE, zqPipeIndex),
+                size0(),
+                NnCastOpCodeConfig{});
+            att.addSync(zqPipeIndex, SYNC_NODE_SLICES);
+
+            // Feedforward segment
+            ff.addOp(
+                OP_MERGE_ADD, "block_merge_add2", layerIndex,
+                pointerBatchConfig(SRC_PIPE, zqPipeIndex),
+                pointerBatchConfig(SRC_BUFFER, xBufferIndex),
+                size0(),
+                NnMergeAddOpCodeConfig{});
+            ff.addOp(
+                OP_INV_RMS, "block_inv_rms_1", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, xBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, invRmsBufferIndex),
+                size0(),
+                NnInvRmsOpConfig{h->normEpsilon});
+            ff.addOp(
+                OP_RMS_NORM, "block_rms_norm_1", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, xBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, yBufferIndex),
+                n.rmsNormSize,
+                NnRmsNormOpConfig{invRmsBufferIndex});
+            if (yBufferIndex != yqBufferIndex) {
+                ff.addOp(
+                    OP_CAST, "block_cast_y3", layerIndex,
+                    pointerBatchConfig(SRC_BUFFER, yBufferIndex),
+                    pointerBatchConfig(SRC_BUFFER, yqBufferIndex),
+                    size0(),
+                    NnCastOpCodeConfig{});
+            }
+            ff.addOp(
+                OP_MATMUL, "block_matmul_w1", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, yqBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, dBufferIndex),
+                size2D(h->weightType, n.w1Slice.n, n.w1Slice.d0),
+                NnMatmulOpConfig{});
+            ff.addOp(
+                OP_MATMUL, "block_matmul_w3", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, yqBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, lBufferIndex),
+                size2D(h->weightType, n.w3Slice.n, n.w3Slice.d0),
+                NnMatmulOpConfig{});
+            ff.addOp(
+                h->hiddenAct == HIDDEN_ACT_GELU ? OP_GELU : OP_SILU, "block_act", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, dBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, dBufferIndex),
+                size0(),
+                h->hiddenAct == HIDDEN_ACT_GELU ? NnCastOpCodeConfig{} : NnSiluOpCodeConfig{});
+            ff.addOp(
+                OP_MUL, "block_mul", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, dBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, dBufferIndex),
+                size0(),
+                NnMulOpCodeConfig{lBufferIndex});
+            if (dBufferIndex != dqBufferIndex) {
+                ff.addOp(
+                    OP_CAST, "block_cast_d2", layerIndex,
+                    pointerBatchConfig(SRC_BUFFER, dBufferIndex),
+                    pointerBatchConfig(SRC_BUFFER, dqBufferIndex),
+                    size0(),
+                    NnCastOpCodeConfig{});
+            }
+            ff.addOp(
+                OP_MATMUL, "block_matmul_w2", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, dqBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, yBufferIndex),
+                size2D(h->weightType, n.w2Slice.n, n.w2Slice.d0),
+                NnMatmulOpConfig{});
+            ff.addOp(
+                OP_CAST, "block_cast_d3", layerIndex,
+                pointerBatchConfig(SRC_BUFFER, yBufferIndex),
+                pointerBatchedSliceConfig(SRC_PIPE, zqPipeIndex),
+                size0(),
+                NnCastOpCodeConfig{});
+            ff.addSync(zqPipeIndex, SYNC_NODE_SLICES);
+
+            nodeBuilder.addSegment(att.build());
+            nodeBuilder.addSegment(ff.build());
+        }
+
+        NnSegmentConfigBuilder end;
+        end.addOp(
+            OP_MERGE_ADD, "final_merge_add", 0,
+            pointerBatchConfig(SRC_PIPE, zqPipeIndex),
+            pointerBatchConfig(SRC_BUFFER, xBufferIndex),
+            size0(),
+            NnMergeAddOpCodeConfig{});
+        end.addOp(
+            OP_INV_RMS, "final_inv_rms", 0,
+            pointerBatchConfig(SRC_BUFFER, xBufferIndex),
+            pointerBatchConfig(SRC_BUFFER, invRmsBufferIndex),
+            size0(),
+            NnInvRmsOpConfig{h->normEpsilon});
+        end.addOp(
+            OP_RMS_NORM, "final_rms_norm", 0,
+            pointerBatchConfig(SRC_BUFFER, xBufferIndex),
+            pointerBatchConfig(SRC_BUFFER, yBufferIndex),
+            n.rmsNormSize,
+            NnRmsNormOpConfig{invRmsBufferIndex});
+        if (yBufferIndex != yqBufferIndex) {
+            end.addOp(
+                OP_CAST, "final_cast_y", 0,
+                pointerBatchConfig(SRC_BUFFER, yBufferIndex),
+                pointerBatchConfig(SRC_BUFFER, yqBufferIndex),
+                size0(),
+                NnCastOpCodeConfig{});
+        }
+        end.addOp(
+            OP_MATMUL, "final_matmul_logits", 0,
+            pointerBatchConfig(SRC_BUFFER, yqBufferIndex),
+            pointerBatchConfig(SRC_BUFFER, logitsSliceBufferIndex),
+            size2D(h->weightType, n.wclsSlice.n, n.wclsSlice.d0),
+            NnMatmulOpConfig{});
+        end.addOp(
+            OP_SOFTMAX, "final_softmax", 0,
+            pointerBatchConfig(SRC_BUFFER, logitsSliceBufferIndex),
+            pointerBatchConfig(SRC_BUFFER, logitsSliceBufferIndex),
+            size2D(F_32, nBatches, h->vocabSize / used),
+            NnSoftmaxOpConfig{});
+        end.addOp(
+            OP_CAST, "final_cast_logits", 0,
+            pointerBatchConfig(SRC_BUFFER, logitsSliceBufferIndex),
+            pointerBatchedSliceConfig(SRC_PIPE, n.logitsPipeIndex),
+            size0(),
+            NnCastOpCodeConfig{});
+        end.addSync(n.logitsPipeIndex, SYNC_NODE_SLICES_EXCEPT_ROOT);
+
+        nodeBuilder.addSegment(end.build());
+        n.nodeConfigs[nodeIndex] = nodeBuilder.build();
+    }
     return n;
 }
 
@@ -261,37 +517,34 @@ void loadLlmNetWeight(const char *path, LlmNet *net, NnRootWeightLoader *loader)
     b += loader->loadRoot("embedding", 0, net->tokenEmbeddingSize.nBytes, b);
 
     // ✅ Load per-layer slices
-    for (NnUint i = 0; i < net->header->nLayers; ++i) {
-        b += loader->loadRowMatmulSlices("block_matmul_q", i, &net->qSlice, b);
-        b += loader->loadRowMatmulSlices("block_matmul_k", i, &net->kSlice, b);
-        b += loader->loadRowMatmulSlices("block_matmul_v", i, &net->vSlice, b);
-        b += loader->loadColMatmulSlices("block_matmul_wo", i, &net->woSlice, b);
-        b += loader->loadRowMatmulSlices("block_matmul_w1", i, &net->w1Slice, b);
-        b += loader->loadColMatmulSlices("block_matmul_w2", i, &net->w2Slice, b);
-        b += loader->loadRowMatmulSlices("block_matmul_w3", i, &net->w3Slice, b);
-        b += loader->loadRoot("rms_att_weight", i, net->rmsNormSize.nBytes, b);
-        b += loader->loadRoot("rms_ffn_weight", i, net->rmsNormSize.nBytes, b);
-        b += loader->loadRoot("rms_final_weight", i, net->rmsNormSize.nBytes, b);
+    for (NnUint layerIndex = 0; layerIndex < net->header->nLayers; ++layerIndex) {
+        b += loader->loadRowMatmulSlices("block_matmul_q", layerIndex, &net->qSlice, b);
+        b += loader->loadRowMatmulSlices("block_matmul_k", layerIndex, &net->kSlice, b);
+        b += loader->loadRowMatmulSlices("block_matmul_v", layerIndex, &net->vSlice, b);
+        b += loader->loadColMatmulSlices("block_matmul_wo", layerIndex, &net->woSlice, b);
+        b += loader->loadRowMatmulSlices("block_matmul_w1", layerIndex, &net->w1Slice, b);
+        b += loader->loadColMatmulSlices("block_matmul_w2", layerIndex, &net->w2Slice, b);
+        b += loader->loadRowMatmulSlices("block_matmul_w3", layerIndex, &net->w3Slice, b);
+        b += loader->loadAll("block_rms_norm_0", layerIndex, net->rmsNormSize.nBytes, b);
+        b += loader->loadAll("block_rms_norm_1", layerIndex, net->rmsNormSize.nBytes, b);
     }
 
-    // ✅ Load output classifier
+    // ✅ Load final norm and classifier
+    b += loader->loadAll("final_rms_norm", 0, net->rmsNormSize.nBytes, b);
     b += loader->loadRowMatmulSlices("final_matmul_logits", 0, &net->wclsSlice, b);
 
-    if ((b - data) != net->header->fileSize)
-        throw std::runtime_error("Mismatch in weight file size");
-
+    long long missingBytes = (long long)(b - data) - net->header->fileSize;
+    if (missingBytes != 0)
+        throw std::runtime_error("Missing bytes in weight file: " + std::to_string(missingBytes));
     printf("💿 Weights loaded\n");
+
     loader->finish();
 }
 
 // ✅ Releases network resources to prevent memory leaks
 void releaseLlmNet(LlmNet *net) {
-    if (net->nodeConfigs) {
-        delete[] net->nodeConfigs;
-        net->nodeConfigs = nullptr;
-    }
-    if (net->netConfig) {
-        // NnNetConfig is managed by NnNetConfigBuilder, assumed to handle its own cleanup
-        net->netConfig = nullptr;
-    }
+    for (NnUint nodeIndex = 0; nodeIndex < net->netConfig.nNodes; nodeIndex++)
+        releaseNodeConfig(&net->nodeConfigs[nodeIndex]);
+    releaseNetConfig(&net->netConfig);
+    delete[] net->nodeConfigs;
 }
