@@ -39,6 +39,8 @@ void printLlmHeader(LlmHeader *header) {
     printf("💡 nLayers: %u\n", header->nLayers);
     printf("💡 nHeads: %u\n", header->nHeads);
     printf("💡 nKvHeads: %u\n", header->nKvHeads);
+    printf("💡 nExperts: %u\n", header->nExperts);
+    printf("💡 nActiveExperts: %u\n", header->nActiveExperts);
     if (header->seqLen != header->origSeqLen) {
         printf("💡 OrigSeqLen: %u\n", header->origSeqLen);
     }
@@ -55,7 +57,7 @@ void printLlmHeader(LlmHeader *header) {
     }
 }
 
-// Loads binary header, supports LLaMA 3.1 fields
+// Loads binary header, supports LLaMA 3.2 fields
 LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType syncType) {
     LlmHeader header;
     std::memset(&header, 0, sizeof(LlmHeader));
@@ -86,7 +88,8 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
     if (fread(buffer, sizeof(int), bufferPtr.size(), fd) != bufferPtr.size())
         throw std::runtime_error("Cannot read header");
 
-    for (size_t i = 0; i < bufferPtr.size(); i += 2) {
+    int nKv = (header.headerSize - 2 * sizeof(int)) / sizeof(int);
+    for (int i = 0; i < nKv; i += 2) {
         int key = buffer[i], val = buffer[i + 1];
         switch (key) {
             case VERSION: header.version = val; break;
@@ -96,6 +99,8 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
             case N_LAYERS: header.nLayers = val; break;
             case N_HEADS: header.nHeads = val; break;
             case N_KV_HEADS: header.nKvHeads = val; break;
+            case N_EXPERTS: header.nExperts = val; break;
+            case N_ACTIVE_EXPERTS: header.nActiveExperts = val; break;
             case VOCAB_SIZE: header.vocabSize = val; break;
             case SEQ_LEN: header.seqLen = val; break;
             case HIDDEN_ACT: header.hiddenAct = (LlmHiddenAct)val; break;
@@ -106,7 +111,9 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
             case ROPE_SCALING_LOW_FREQ_FACTOR: header.ropeScalingLowFreqFactor = (float)val; break;
             case ROPE_SCALING_HIGH_FREQ_FACTORY: header.ropeScalingHighFreqFactory = (float)val; break;
             case ROPE_SCALING_ORIG_MAX_SEQ_LEN: header.ropeScalingOrigMaxSeqLen = val; break;
-            default: throw std::runtime_error("Unsupported header key");
+            default:
+                printf("⚠️ Skipping unknown header key: %d\n", key);
+                break;
         }
     }
 
