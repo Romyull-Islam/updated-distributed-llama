@@ -469,9 +469,8 @@ void loadLlmNetWeight(const char *path, LlmNet *net, NnRootWeightLoader *loader)
     b += loader->loadRowMatmulSlices("final_matmul_logits", 0, &net->wclsSlice, b);
 
     long long missingBytes = (long long)(b - data) - net->header->fileSize;
-    if (missingBytes != 0) {
+    if (missingBytes != 0)
         throw std::runtime_error("Missing bytes in weight file: " + std::to_string(missingBytes));
-    }
     printf("💿 Weights loaded\n");
 
     loader->finish();
@@ -479,9 +478,8 @@ void loadLlmNetWeight(const char *path, LlmNet *net, NnRootWeightLoader *loader)
 
 // Releases network resources to prevent memory leaks
 void releaseLlmNet(LlmNet *net) {
-    for (NnUint nodeIndex = 0; nodeIndex < net->netConfig.nNodes; nodeIndex++) {
+    for (NnUint nodeIndex = 0; nodeIndex < net->netConfig.nNodes; nodeIndex++)
         releaseNodeConfig(&net->nodeConfigs[nodeIndex]);
-    }
     releaseNetConfig(&net->netConfig);
     delete[] net->nodeConfigs;
 }
