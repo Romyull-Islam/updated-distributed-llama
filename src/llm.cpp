@@ -10,12 +10,7 @@
 #include <cmath>
 #include <cstdio>
 
-// ✅ Define empty config for softmax to match nn-core.hpp pattern
-typedef struct {
-    // empty
-} NnSoftmaxOpConfig;
-
-// ✅ Converts enum values to strings for readable debug prints
+// Converts enum values to strings for readable debug prints
 static const char *hiddenActToString(LlmHiddenAct act) {
     if (act == HIDDEN_ACT_GELU) return "GELU";
     if (act == HIDDEN_ACT_SILU) return "SiLU";
@@ -33,67 +28,34 @@ static const char *archTypeToString(LlmArchType type) {
     throw std::runtime_error("Unsupported architecture");
 }
 
-// ✅ Prints all key fields from model header for debugging
+// Prints all key fields from model header for debugging
 void printLlmHeader(LlmHeader *header) {
-    printf("🧠 Arch: %s\n", archTypeToString(header->archType));
-    printf("🧠 HiddenAct: %s\n", hiddenActToString(header->hiddenAct));
-    printf("🧠 Dim: %u\n", header->dim);
-    printf("🧠 KvDim: %u\n", header->kvDim);
-    printf("🧠 HiddenDim: %u\n", header->hiddenDim);
-    printf("🧠 VocabSize: %u\n", header->vocabSize);
-    printf("🧠 nLayers: %u\n", header->nLayers);
-    printf("🧠 nHeads: %u\n", header->nHeads);
-    printf("🧠 nKvHeads: %u\n", header->nKvHeads);
+    printf("💡 Arch: %s\n", archTypeToString(header->archType));
+    printf("💡 HiddenAct: %s\n", hiddenActToString(header->hiddenAct));
+    printf("💡 Dim: %u\n", header->dim);
+    printf("💡 KvDim: %u\n", header->kvDim);
+    printf("💡 HiddenDim: %u\n", header->hiddenDim);
+    printf("💡 VocabSize: %u\n", header->vocabSize);
+    printf("💡 nLayers: %u\n", header->nLayers);
+    printf("💡 nHeads: %u\n", header->nHeads);
+    printf("💡 nKvHeads: %u\n", header->nKvHeads);
     if (header->seqLen != header->origSeqLen) {
-        printf("🧠 OrigSeqLen: %u\n", header->origSeqLen);
+        printf("💡 OrigSeqLen: %u\n", header->origSeqLen);
     }
-    printf("🧠 SeqLen: %u\n", header->seqLen);
-    printf("🧠 NormEpsilon: %f\n", header->normEpsilon);
-    printf("🧠 RopeType: %s\n", ropeTypeToString(header->ropeType));
-    printf("🧠 RopeTheta: %.0f\n", header->ropeTheta);
+    printf("💡 SeqLen: %u\n", header->seqLen);
+    printf("💡 NormEpsilon: %f\n", header->normEpsilon);
+    printf("💡 RopeType: %s\n", ropeTypeToString(header->ropeType));
+    printf("💡 RopeTheta: %.0f\n", header->ropeTheta);
     if (header->ropeType == ROPE_LLAMA3_1) {
-        printf("🧠 RopeScaling: f=%.1f, l=%.1f, h=%.1f, o=%d\n",
+        printf("💡 RopeScaling: f=%.1f, l=%.1f, h=%.1f, o=%d\n",
             header->ropeScalingFactor,
             header->ropeScalingLowFreqFactor,
-            header->ropeScalingHighFreqFactor,
+            header->ropeScalingHighFreqFactory,
             header->ropeScalingOrigMaxSeqLen);
     }
 }
 
-// ✅ Fills rope cache for LLaMA and LLaMA 3.1 models
-void fullfillRopeLlama3Cache(const NnRopeLlamaOpConfig *config, float *cache) {
-    const NnUint dim0 = config->isQ ? config->slice.qDim0 : config->slice.kvDim0;
-    if (dim0 % 2 != 0) throw std::runtime_error("RoPE dimension must be even");
-    const NnUint dim0Half = dim0 / 2;
-    const NnUint sliceDim = config->slice.sliceDim;
-    const float ropeTheta = config->ropeTheta ? config->ropeTheta : 10000.0f;
-    const bool isLlama3_1 = config->ropeScalingFactor > 0.0f;
-    const float scalingFactor = isLlama3_1 ? config->ropeScalingFactor : 1.0f;
-    const float lowFreqFactor = isLlama3_1 ? config->ropeScalingLowFreqFactor : 1.0f;
-    const float highFreqFactor = isLlama3_1 ? config->ropeScalingHighFreqFactor : 1.0f;
-    const NnUint seqLen = config->slice.seqLen;
-
-    for (NnUint pos = 0; pos < seqLen; ++pos) {
-        for (NnUint i = 0; i < dim0Half; ++i) {
-            float freq = (float)i / (float)dim0Half;
-            float scaledFreq = freq;
-            if (isLlama3_1) {
-                scaledFreq /= scalingFactor;
-                if (scaledFreq < lowFreqFactor) {
-                    scaledFreq *= lowFreqFactor;
-                } else if (scaledFreq > highFreqFactor) {
-                    scaledFreq *= highFreqFactor;
-                }
-            }
-            float theta = (float)pos / ropeTheta * scaledFreq;
-            NnUint idx = pos * sliceDim + i * 2;
-            cache[idx] = cosf(theta);
-            cache[idx + 1] = sinf(theta);
-        }
-    }
-}
-
-// ✅ Loads binary header, supports LLaMA 3.1 fields
+// Loads binary header, supports LLaMA 3.1 fields
 LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType syncType) {
     LlmHeader header;
     std::memset(&header, 0, sizeof(LlmHeader));
@@ -142,9 +104,8 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
             case ROPE_THETA: header.ropeTheta = (float)val; break;
             case ROPE_SCALING_FACTOR: header.ropeScalingFactor = (float)val; break;
             case ROPE_SCALING_LOW_FREQ_FACTOR: header.ropeScalingLowFreqFactor = (float)val; break;
-            case ROPE_SCALING_HIGH_FREQ_FACTOR: header.ropeScalingHighFreqFactor = (float)val; break;
+            case ROPE_SCALING_HIGH_FREQ_FACTORY: header.ropeScalingHighFreqFactory = (float)val; break;
             case ROPE_SCALING_ORIG_MAX_SEQ_LEN: header.ropeScalingOrigMaxSeqLen = val; break;
-            case RMSNORM_EPSILON: header.normEpsilon = (float)val; break;
             default: throw std::runtime_error("Unsupported header key");
         }
     }
@@ -169,56 +130,39 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
     return header;
 }
 
-// ✅ Memory-aware slicing for adaptive load distribution
-static NnUint trySliceWithFallback(NnFloatType type, NnUint maxDevices, NnUint d0, NnUint d1, const char *label, NnRowMatmulSlice *out) {
-    NnSize mem = d0 * d1 * getBytes(type, d0 * d1);
-    for (NnUint n = 1; n <= maxDevices; ++n) {
-        NnRowMatmulSlice slice = sliceRowMatmul(type, n, d0, d1);
-        if (slice.size.nBytes <= mem) {
-            *out = slice;
-            return n;
-        }
-    }
-    throw std::runtime_error(std::string("Failed to slice matrix for ") + label);
-}
-
-// ✅ Builds network with adaptive device count and real layer operations
-LlmNet buildLlmNet(LlmHeader *h, NnUint maxDevices, NnUint nBatches) {
+// Builds network with device count and layer operations
+LlmNet buildLlmNet(LlmHeader *h, NnUint nNodes, NnUint nBatches) {
     LlmNet n;
     n.tokenEmbeddingSize = size2D(h->weightType, h->vocabSize, h->dim);
     n.rmsNormSize = size1D(F_32, h->dim);
 
-    // 🧠 Start with one device and only increment if slicing fails
-    NnUint used = 1;
-    used = std::max(used, trySliceWithFallback(h->weightType, maxDevices, h->dim, h->dim, "q", &n.qSlice));
-    used = std::max(used, trySliceWithFallback(h->weightType, maxDevices, h->dim, h->kvDim, "k", &n.kSlice));
-    used = std::max(used, trySliceWithFallback(h->weightType, maxDevices, h->dim, h->kvDim, "v", &n.vSlice));
-    used = std::max(used, trySliceWithFallback(h->weightType, maxDevices, h->dim, h->dim, "wo", &n.woSlice));
-    used = std::max(used, trySliceWithFallback(h->weightType, maxDevices, h->dim, h->vocabSize, "wcls", &n.wclsSlice));
-    used = std::max(used, trySliceWithFallback(h->weightType, maxDevices, h->dim, h->hiddenDim, "w1", &n.w1Slice));
-    used = std::max(used, trySliceWithFallback(h->weightType, maxDevices, h->hiddenDim, h->dim, "w2", &n.w2Slice));
-    used = std::max(used, trySliceWithFallback(h->weightType, maxDevices, h->dim, h->hiddenDim, "w3", &n.w3Slice));
+    NnKvCacheSlice kvCacheSlice = sliceKvCache(h->kvDim, h->seqLen, nNodes);
+    NnMultiHeadAttSlice multiHeadAttSlice = sliceMultiHeadAtt(h->nHeads, h->seqLen, nNodes, nBatches);
 
-    // 🧠 Cache + attention slice definitions
-    NnKvCacheSlice kvCacheSlice = sliceKvCache(h->kvDim, h->seqLen, used);
-    NnMultiHeadAttSlice multiHeadAttSlice = sliceMultiHeadAtt(h->nHeads, h->seqLen, used, nBatches);
+    n.qSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->dim);
+    n.kSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->kvDim);
+    n.vSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->kvDim);
+    n.woSlice = sliceColMatmul(h->weightType, nNodes, h->dim, h->dim);
+    n.w1Slice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->hiddenDim);
+    n.w2Slice = sliceColMatmul(h->weightType, nNodes, h->hiddenDim, h->dim);
+    n.w3Slice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->hiddenDim);
+    n.wclsSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->vocabSize);
 
-    // 🧠 Build network graph
-    NnNetConfigBuilder netBuilder(used, nBatches);
+    NnNetConfigBuilder netBuilder(nNodes, nBatches);
     n.positionPipeIndex = netBuilder.addPipe("POS", size2D(F_32, nBatches, 1));
     n.tokenPipeIndex = netBuilder.addPipe("TOK", size2D(F_32, nBatches, 1));
     n.xPipeIndex = netBuilder.addPipe("X", size2D(F_32, nBatches, h->dim));
     n.logitsPipeIndex = netBuilder.addPipe("LG", size2D(F_32, nBatches, h->vocabSize));
-    const NnUint zqPipeIndex = netBuilder.addPipe("ZQ", size2D(h->syncType, nBatches, h->dim * used));
+    const NnUint zqPipeIndex = netBuilder.addPipe("ZQ", size2D(h->syncType, nBatches, h->dim * nNodes));
 
     netBuilder.addPreSync(n.positionPipeIndex);
 
     n.header = h;
     n.netConfig = netBuilder.build();
-    n.nodeConfigs = new NnNodeConfig[used];
+    n.nodeConfigs = new NnNodeConfig[nNodes];
 
-    for (NnUint nodeIndex = 0; nodeIndex < used; nodeIndex++) {
-        NnRopeSlice ropeSlice = sliceRope(h->dim, h->kvDim, h->nKvHeads, used, h->seqLen, h->headSize, h->ropeTheta, nodeIndex);
+    for (NnUint nodeIndex = 0; nodeIndex < nNodes; nodeIndex++) {
+        NnRopeSlice ropeSlice = sliceRope(h->dim, h->kvDim, h->nKvHeads, nNodes, h->seqLen, h->headSize, h->ropeTheta, nodeIndex);
         NnNodeConfigBuilder nodeBuilder(nodeIndex);
 
         const NnUint xBufferIndex = nodeBuilder.addBuffer("x", size2D(F_32, nBatches, h->dim));
@@ -226,7 +170,7 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint maxDevices, NnUint nBatches) {
         const NnUint yqBufferIndex = h->syncType == F_32
             ? yBufferIndex
             : nodeBuilder.addBuffer("yq", size2D(h->syncType, nBatches, h->dim));
-        const NnUint yqSliceIndex = nodeBuilder.addBuffer("yq_slice", size2D(h->syncType, nBatches, h->dim / used));
+        const NnUint yqSliceIndex = nodeBuilder.addBuffer("yq_slice", size2D(h->syncType, nBatches, h->dim / nNodes));
 
         const NnUint qBufferIndex = nodeBuilder.addBuffer("q", size2D(F_32, nBatches, n.qSlice.d0));
         const NnUint kTempBufferIndex = nodeBuilder.addBuffer("k_temp", size2D(F_32, nBatches, n.kSlice.d0));
@@ -240,7 +184,7 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint maxDevices, NnUint nBatches) {
         const NnUint invRmsBufferIndex = nodeBuilder.addBuffer("inv_rms", size2D(F_32, nBatches, 1));
         const NnUint ropeCacheBufferIndex = nodeBuilder.addBuffer("rope_cache", ropeSlice.cacheSize);
         const NnUint attBufferIndex = nodeBuilder.addBuffer("att", multiHeadAttSlice.attSize);
-        const NnUint logitsSliceBufferIndex = nodeBuilder.addBuffer("lg", size2D(F_32, nBatches, h->vocabSize / used));
+        const NnUint logitsSliceBufferIndex = nodeBuilder.addBuffer("lg", size2D(F_32, nBatches, h->vocabSize / nNodes));
 
         NnSegmentConfigBuilder start;
         if (nodeIndex == 0) {
@@ -322,7 +266,7 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint maxDevices, NnUint nBatches) {
                 pointerBatchConfig(SRC_BUFFER, qBufferIndex),
                 size0(),
                 NnRopeLlamaOpConfig{true, n.positionPipeIndex, ropeCacheBufferIndex,
-                    h->ropeScalingFactor, h->ropeScalingLowFreqFactor, h->ropeScalingHighFreqFactor, h->ropeScalingOrigMaxSeqLen,
+                    h->ropeScalingFactor, h->ropeScalingLowFreqFactor, h->ropeScalingHighFreqFactory, h->ropeScalingOrigMaxSeqLen,
                     ropeSlice});
             att.addOp(
                 OP_ROPE_LLAMA, "block_rope_k", layerIndex,
@@ -330,7 +274,7 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint maxDevices, NnUint nBatches) {
                 pointerBatchConfig(SRC_BUFFER, kTempBufferIndex),
                 size0(),
                 NnRopeLlamaOpConfig{false, n.positionPipeIndex, ropeCacheBufferIndex,
-                    h->ropeScalingFactor, h->ropeScalingLowFreqFactor, h->ropeScalingHighFreqFactor, h->ropeScalingOrigMaxSeqLen,
+                    h->ropeScalingFactor, h->ropeScalingLowFreqFactor, h->ropeScalingHighFreqFactory, h->ropeScalingOrigMaxSeqLen,
                     ropeSlice});
             att.addOp(
                 OP_SHIFT, "block_shift_k", layerIndex,
@@ -363,7 +307,7 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint maxDevices, NnUint nBatches) {
                 OP_MATMUL, "block_matmul_wo", layerIndex,
                 pointerBatchConfig(SRC_BUFFER, yqSliceIndex),
                 pointerBatchConfig(SRC_BUFFER, yBufferIndex),
-                size2D(h->weightType, n.woSlice.n, n.woSlice.d0),
+                size2D(h->weightType, n.woSlice.n0, n.woSlice.d),
                 NnMatmulOpConfig{});
             att.addOp(
                 OP_CAST, "block_cast_d", layerIndex,
@@ -436,7 +380,7 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint maxDevices, NnUint nBatches) {
                 OP_MATMUL, "block_matmul_w2", layerIndex,
                 pointerBatchConfig(SRC_BUFFER, dqBufferIndex),
                 pointerBatchConfig(SRC_BUFFER, yBufferIndex),
-                size2D(h->weightType, n.w2Slice.n, n.w2Slice.d0),
+                size2D(h->weightType, n.w2Slice.n0, n.w2Slice.d),
                 NnMatmulOpConfig{});
             ff.addOp(
                 OP_CAST, "block_cast_d3", layerIndex,
@@ -484,12 +428,6 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint maxDevices, NnUint nBatches) {
             size2D(h->weightType, n.wclsSlice.n, n.wclsSlice.d0),
             NnMatmulOpConfig{});
         end.addOp(
-            OP_SOFTMAX, "final_softmax", 0,
-            pointerBatchConfig(SRC_BUFFER, logitsSliceBufferIndex),
-            pointerBatchConfig(SRC_BUFFER, logitsSliceBufferIndex),
-            size2D(F_32, nBatches, h->vocabSize / used),
-            NnSoftmaxOpConfig{});
-        end.addOp(
             OP_CAST, "final_cast_logits", 0,
             pointerBatchConfig(SRC_BUFFER, logitsSliceBufferIndex),
             pointerBatchedSliceConfig(SRC_PIPE, n.logitsPipeIndex),
@@ -503,7 +441,7 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint maxDevices, NnUint nBatches) {
     return n;
 }
 
-// ✅ Loads weights for all layers, ensuring correct slicing
+// Loads weights for all layers
 void loadLlmNetWeight(const char *path, LlmNet *net, NnRootWeightLoader *loader) {
     MmapFile file;
     openMmapFile(&file, path, net->header->fileSize);
@@ -513,10 +451,8 @@ void loadLlmNetWeight(const char *path, LlmNet *net, NnRootWeightLoader *loader)
     NnByte *data = (NnByte *)file.data;
     NnByte *b = &data[net->header->headerSize];
 
-    // ✅ Load token embedding
     b += loader->loadRoot("embedding", 0, net->tokenEmbeddingSize.nBytes, b);
 
-    // ✅ Load per-layer slices
     for (NnUint layerIndex = 0; layerIndex < net->header->nLayers; ++layerIndex) {
         b += loader->loadRowMatmulSlices("block_matmul_q", layerIndex, &net->qSlice, b);
         b += loader->loadRowMatmulSlices("block_matmul_k", layerIndex, &net->kSlice, b);
@@ -529,7 +465,6 @@ void loadLlmNetWeight(const char *path, LlmNet *net, NnRootWeightLoader *loader)
         b += loader->loadAll("block_rms_norm_1", layerIndex, net->rmsNormSize.nBytes, b);
     }
 
-    // ✅ Load final norm and classifier
     b += loader->loadAll("final_rms_norm", 0, net->rmsNormSize.nBytes, b);
     b += loader->loadRowMatmulSlices("final_matmul_logits", 0, &net->wclsSlice, b);
 
@@ -541,7 +476,7 @@ void loadLlmNetWeight(const char *path, LlmNet *net, NnRootWeightLoader *loader)
     loader->finish();
 }
 
-// ✅ Releases network resources to prevent memory leaks
+// Releases network resources to prevent memory leaks
 void releaseLlmNet(LlmNet *net) {
     for (NnUint nodeIndex = 0; nodeIndex < net->netConfig.nNodes; nodeIndex++)
         releaseNodeConfig(&net->nodeConfigs[nodeIndex]);
