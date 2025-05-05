@@ -28,24 +28,6 @@ static const char *archTypeToString(LlmArchType type) {
     throw std::runtime_error("Unsupported architecture");
 }
 
-// Estimates memory usage for inference (in bytes)
-static size_t estimateMemoryUsage(LlmHeader *h, NnUint nNodes, NnUint nBatches) {
-    size_t memory = 0;
-    // Weights (embedding + layers + final)
-    memory += h->vocabSize * h->dim * sizeof(float) / 2; // Q4.0 approximation
-    memory += h->nLayers * (h->dim * h->dim + h->dim * h->kvDim * 2 + h->dim * h->dim +
-                            h->dim * h->hiddenDim * 2 + h->hiddenDim * h->dim) * sizeof(float) / 2;
-    memory += h->dim * h->vocabSize * sizeof(float) / 2;
-    // KV Cache
-    size_t kvDim = (h->dim * h->nKvHeads) / h->nHeads;
-    memory += h->nLayers * 2 * h->seqLen * kvDim * sizeof(float);
-    // Activations (approximate, per batch)
-    memory += nBatches * (h->dim + h->hiddenDim + h->dim * h->nHeads / h->nKvHeads) * sizeof(float) * 5; // q, k, v, d, l
-    // Divide by nNodes (distribute weights and KV cache)
-    memory /= nNodes;
-    return memory;
-}
-
 // Prints all key fields from model header for debugging
 void printLlmHeader(LlmHeader *header) {
     printf("💡 Arch: %s\n", archTypeToString(header->archType));
@@ -136,13 +118,7 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
     }
 
     if (header.weightType == F_UNK) throw std::runtime_error("Weight type not found in header");
-    if (header.version < 1) {
-        printf("⚠️ Warning: Model version %d is lower than expected (1)\n", header.version);
-        throw std::runtime_error("Unsupported version");
-    } else if (header.version > 1) {
-        printf("⚠️ Warning: Model version %d is higher than expected (1), proceeding with caution\n", header.version);
-    }
-
+    if (header.version != 1) throw std::runtime_error("Unsupported version");
     if (header.dim % header.nHeads != 0) throw std::runtime_error("Dim must be divisible by nHeads");
     if (header.nHeads % header.nKvHeads != 0) throw std::runtime_error("nHeads must be divisible by nKvHeads");
 
@@ -161,36 +137,22 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
     return header;
 }
 
-// Builds network with minimal device usage
-LlmNet buildLlmNet(LlmHeader *h, NnUint maxNodes, NnUint nBatches) {
+// Builds network with device count and layer operations
+LlmNet buildLlmNet(LlmHeader *h, NnUint nNodes, NnUint nBatches) {
     LlmNet n;
-    NnUint nNodes = 1; // Start with one device
-    const size_t MAX_MEMORY_PER_DEVICE = 8ULL * 1024 * 1024 * 1024; // 8 GB
-
-    // Check if one device is sufficient
-    size_t memoryRequired = estimateMemoryUsage(h, nNodes, nBatches);
-    if (memoryRequired > MAX_MEMORY_PER_DEVICE && maxNodes > 1) {
-        nNodes = 2; // Try two devices
-        memoryRequired = estimateMemoryUsage(h, nNodes, nBatches);
-        printf("💡 Using %u devices (memory per device: ~%zu MB)\n", nNodes, memoryRequired / (1024 * 1024));
-    } else {
-        printf("💡 Using 1 device (memory: ~%zu MB)\n", memoryRequired / (1024 * 1024));
-    }
-
     n.tokenEmbeddingSize = size2D(h->weightType, h->vocabSize, h->dim);
     n.rmsNormSize = size1D(F_32, h->dim);
 
     NnKvCacheSlice kvCacheSlice = sliceKvCache(h->kvDim, h->seqLen, nNodes);
     NnMultiHeadAttSlice multiHeadAttSlice = sliceMultiHeadAtt(h->nHeads, h->seqLen, nNodes, nBatches);
 
-    // Prioritize first device for complex layers (attention, feedforward)
-    n.qSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->dim, nNodes > 1 ? 0.75 : 1.0); // 75% to first device if nNodes > 1
-    n.kSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->kvDim, nNodes > 1 ? 0.75 : 1.0);
-    n.vSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->kvDim, nNodes > 1 ? 0.75 : 1.0);
-    n.woSlice = sliceColMatmul(h->weightType, nNodes, h->dim, h->dim, nNodes > 1 ? 0.75 : 1.0);
-    n.w1Slice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->hiddenDim, nNodes > 1 ? 0.75 : 1.0);
-    n.w2Slice = sliceColMatmul(h->weightType, nNodes, h->hiddenDim, h->dim, nNodes > 1 ? 0.75 : 1.0);
-    n.w3Slice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->hiddenDim, nNodes > 1 ? 0.75 : 1.0);
+    n.qSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->dim);
+    n.kSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->kvDim);
+    n.vSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->kvDim);
+    n.woSlice = sliceColMatmul(h->weightType, nNodes, h->dim, h->dim);
+    n.w1Slice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->hiddenDim);
+    n.w2Slice = sliceColMatmul(h->weightType, nNodes, h->hiddenDim, h->dim);
+    n.w3Slice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->hiddenDim);
     n.wclsSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->vocabSize);
 
     NnNetConfigBuilder netBuilder(nNodes, nBatches);
