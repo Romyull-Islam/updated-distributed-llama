@@ -109,7 +109,7 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
             case ROPE_THETA: header.ropeTheta = (float)val; break;
             case ROPE_SCALING_FACTOR: header.ropeScalingFactor = (float)val; break;
             case ROPE_SCALING_LOW_FREQ_FACTOR: header.ropeScalingLowFreqFactor = (float)val; break;
-            case ROPE_SCALING_HIGH_FREQ_FACTORY: header.ropeScalingHighFreqFactory = (float)val; break;
+            case ROPE_SCALING_HIGH_FREQ_FACTOR: header.ropeScalingHighFreqFactory = (float)val; break;
             case ROPE_SCALING_ORIG_MAX_SEQ_LEN: header.ropeScalingOrigMaxSeqLen = val; break;
             default:
                 printf("⚠️ Skipping unknown header key: %d\n", key);
@@ -140,7 +140,7 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
 // Builds network with device count and layer operations
 LlmNet buildLlmNet(LlmHeader *h, NnUint nNodes, NnUint nBatches) {
     LlmNet n;
-    n.tokenEmbeddingSize = size2D(h->weightType, h->vocabSize, h->dim);
+    n.tokenEmbeddingSize = size2D(F_32, h->vocabSize, h->dim);
     n.rmsNormSize = size1D(F_32, h->dim);
 
     NnKvCacheSlice kvCacheSlice = sliceKvCache(h->kvDim, h->seqLen, nNodes);
