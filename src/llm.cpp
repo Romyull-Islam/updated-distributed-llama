@@ -7,7 +7,6 @@
 #include <stdexcept>
 #include <vector>
 #include <cstring>
-#include <cmath>
 #include <cstdio>
 
 // Converts enum values to strings for readable debug prints
@@ -109,7 +108,7 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
             case ROPE_THETA: header.ropeTheta = (float)val; break;
             case ROPE_SCALING_FACTOR: header.ropeScalingFactor = (float)val; break;
             case ROPE_SCALING_LOW_FREQ_FACTOR: header.ropeScalingLowFreqFactor = (float)val; break;
-            case ROPE_SCALING_HIGH_FREQ_FACTOR: header.ropeScalingHighFreqFactory = (float)val; break;
+            case ROPE_SCALING_HIGH_FREQ_FACTORY: header.ropeScalingHighFreqFactory = (float)val; break;
             case ROPE_SCALING_ORIG_MAX_SEQ_LEN: header.ropeScalingOrigMaxSeqLen = val; break;
             default:
                 printf("⚠️ Skipping unknown header key: %d\n", key);
@@ -117,10 +116,7 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
         }
     }
 
-    if (header.weightType == F_UNK) throw std::runtime_error("Weight type not found in header");
-
-    if (header.dim % header.nHeads != 0) throw std::runtime_error("Dim must be divisible by nHeads");
-    if (header.nHeads % header.nKvHeads != 0) throw std::runtime_error("nHeads must be divisible by nKvHeads");
+    if (header.weightType == F_UNK) throw std::runtime_error("Model does not specify weight type");
 
     header.origSeqLen = header.seqLen;
     if (maxSeqLen > 0 && header.seqLen > maxSeqLen)
@@ -133,7 +129,6 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
     header.fileSize = ftell(fd);
     if (header.fileSize == -1) throw std::runtime_error("Cannot determine file size");
 
-    printLlmHeader(&header);
     return header;
 }
 
