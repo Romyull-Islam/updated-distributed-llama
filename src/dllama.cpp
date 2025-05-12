@@ -220,17 +220,26 @@ int main(int argc, char **argv) {
     int returnCode = EXIT_SUCCESS;
     try {
         AppCliArgs args = AppCliArgs::parse(argc, argv, true);
-        if (std::strcmp(args.mode, "inference") == 0) {
+        if (std::strcmp(args.mode, "worker") == 0)
+            runWorkerApp(&args);
+        else if (std::strcmp(args.mode, "inference") == 0) {
             args.benchmark = true;
             runInferenceApp(&args, &inference);
         } else if (std::strcmp(args.mode, "chat") == 0)
             runInferenceApp(&args, &chat);
-        else if (std::strcmp(args.mode, "worker") == 0)
-            runWorkerApp(&args);
         else
             throw std::runtime_error("Unsupported mode");
-    } catch (std::exception &e) {
-        printf("🚨 Critical error: %s\n", e.what());
+    } catch (const std::bad_alloc& e) {
+        printf("🚨 Critical error: Memory allocation failed: %s\n", e.what());
+        returnCode = EXIT_FAILURE;
+    } catch (const std::runtime_error& e) {
+        printf("🚨 Critical error: Runtime error: %s\n", e.what());
+        returnCode = EXIT_FAILURE;
+    } catch (const std::exception& e) {
+        printf("🚨 Critical error: %s (%s)\n", e.what(), typeid(e).name());
+        returnCode = EXIT_FAILURE;
+    } catch (...) {
+        printf("🚨 Unknown error\n");
         returnCode = EXIT_FAILURE;
     }
 
