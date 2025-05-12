@@ -134,53 +134,34 @@ LlmHeader loadLlmHeader(const char *path, const NnUint maxSeqLen, NnFloatType sy
 
 // Builds network with device count and layer operations
 LlmNet buildLlmNet(LlmHeader *h, NnUint nNodes, NnUint nBatches) {
-    if (!h) throw std::runtime_error("Null header pointer");
-    if (nNodes == 0 || nBatches == 0) throw std::runtime_error("Invalid node or batch count: nNodes=" + std::to_string(nNodes) + ", nBatches=" + std::to_string(nBatches));
-    if (h->dim == 0 || h->seqLen == 0 || h->vocabSize == 0) throw std::runtime_error("Invalid model dimensions: dim=" + std::to_string(h->dim) + ", seqLen=" + std::to_string(h->seqLen) + ", vocabSize=" + std::to_string(h->vocabSize));
-    if (nNodes > h->nKvHeads) throw std::runtime_error("Number of nodes (" + std::to_string(nNodes) + ") exceeds number of KV heads (" + std::to_string(h->nKvHeads) + ")");
-
-    printf("Building network: nNodes=%u, nBatches=%u, seqLen=%u, dim=%u, vocabSize=%u\n", nNodes, nBatches, h->seqLen, h->dim, h->vocabSize);
-
     LlmNet n;
-    n.header = h;
     n.tokenEmbeddingSize = size2D(F_32, h->vocabSize, h->dim);
     n.rmsNormSize = size1D(F_32, h->dim);
+
+    NnKvCacheSlice kvCacheSlice = sliceKvCache(h->kvDim, h->seqLen, nNodes);
+    NnMultiHeadAttSlice multiHeadAttSlice = sliceMultiHeadAtt(h->nHeads, h->seqLen, nNodes, nBatches);
+
     n.qSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->dim);
     n.kSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->kvDim);
     n.vSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->kvDim);
-    n.oSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->dim);
+    n.woSlice = sliceColMatmul(h->weightType, nNodes, h->dim, h->dim);
     n.w1Slice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->hiddenDim);
-    n.w2Slice = sliceRowMatmul(h->weightType, nNodes, h->hiddenDim, h->dim);
+    n.w2Slice = sliceColMatmul(h->weightType, nNodes, h->hiddenDim, h->dim);
     n.w3Slice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->hiddenDim);
+    n.wclsSlice = sliceRowMatmul(h->weightType, nNodes, h->dim, h->vocabSize);
 
-    // Validate buffer sizes
-    if (n.tokenEmbeddingSize.nBytes > 2ULL * 1024 * 1024 * 1024) // 2 GB limit
-        throw std::runtime_error("Token embedding size too large: " + std::to_string(n.tokenEmbeddingSize.nBytes) + " bytes");
-    if (n.qSlice.d0 > h->dim || n.qSlice.d1 > h->dim)
-        throw std::runtime_error("Invalid qSlice dimensions: d0=" + std::to_string(n.qSlice.d0) + ", d1=" + std::to_string(n.qSlice.d1));
+    NnNetConfigBuilder netBuilder(nNodes, nBatches);
+    n.positionPipeIndex = netBuilder.addPipe("POS", size2D(F_32, nBatches, 1));
+    n.tokenPipeIndex = netBuilder.addPipe("TOK", size2D(F_32, nBatches, 1));
+    n.xPipeIndex = netBuilder.addPipe("X", size2D(F_32, nBatches, h->dim));
+    n.logitsPipeIndex = netBuilder.addPipe("LG", size2D(F_32, nBatches, h->vocabSize));
+    const NnUint zqPipeIndex = netBuilder.addPipe("ZQ", size2D(h->syncType, nBatches, h->dim * nNodes));
 
-    NnKvCacheSlice kvCacheSlice = sliceKvCache(h->kvDim, h->seqLen, nNodes);
-    if (kvCacheSlice.keySize.nBytes > 1ULL * 1024 * 1024 * 1024) // 1 GB limit
-        throw std::runtime_error("KV cache size too large: " + std::to_string(kvCacheSlice.keySize.nBytes) + " bytes");
+    netBuilder.addPreSync(n.positionPipeIndex);
 
-    NnMultiHeadAttSlice multiHeadAttSlice = sliceMultiHeadAtt(h->nHeads, h->seqLen, nNodes, nBatches);
-    NnRopeSlice ropeSlice = sliceRope(h->seqLen, h->dim, nNodes);
-
-    NnNetConfigBuilder netBuilder;
-    netBuilder.addPipe("token", size1D(F_32, nBatches));
-    netBuilder.addPipe("position", size1D(F_32, nBatches));
-    netBuilder.addPipe("logits", size1D(F_32, h->vocabSize));
-
-    try {
-        n.nodeConfigs = new NnNodeConfig[nNodes];
-    } catch (const std::bad_alloc&) {
-        throw std::runtime_error("Failed to allocate node configs for " + std::to_string(nNodes) + " nodes");
-    }
-
+    n.header = h;
     n.netConfig = netBuilder.build();
-    n.tokenPipeIndex = netBuilder.getPipeIndex("token");
-    n.positionPipeIndex = netBuilder.getPipeIndex("position");
-    n.logitsPipeIndex = netBuilder.getPipeIndex("logits");
+    n.nodeConfigs = new NnNodeConfig[nNodes];
 
     for (NnUint nodeIndex = 0; nodeIndex < nNodes; nodeIndex++) {
         NnRopeSlice ropeSlice = sliceRope(h->dim, h->kvDim, h->nKvHeads, nNodes, h->seqLen, h->headSize, h->ropeTheta, nodeIndex);
