@@ -16,27 +16,11 @@ NnNetExecution::NnNetExecution(NnUint nThreads, NnNetConfig *netConfig) {
     pipes = new NnByte *[netConfig->nPipes];
     for (NnUint pipeIndex = 0; pipeIndex < netConfig->nPipes; pipeIndex++) {
         NnPipeConfig *pipeConfig = &netConfig->pipes[pipeIndex];
-
-        // Ensure float-aligned allocation for pipes used with float* casts
-        bool needsFloatAlignment = (
-            pipeIndex == netConfig->tokenPipeIndex ||
-            pipeIndex == netConfig->positionPipeIndex ||
-            pipeIndex == netConfig->logitsPipeIndex
-        );
-
-        void* raw = nullptr;
-        if (needsFloatAlignment) {
-            if (posix_memalign(&raw, alignof(float), pipeConfig->size.nBytes) != 0)
-                throw std::bad_alloc();
-        } else {
-            raw = new NnByte[pipeConfig->size.nBytes];
-        }
-
-        std::memset(raw, 0, pipeConfig->size.nBytes);
-        pipes[pipeIndex] = reinterpret_cast<NnByte *>(raw);
+        NnByte *pipe = new NnByte[pipeConfig->size.nBytes];
+        std::memset(pipe, 0, pipeConfig->size.nBytes);
+        pipes[pipeIndex] = pipe;
     }
 }
-
 
 NnNetExecution::~NnNetExecution() {
     for (NnUint pipeIndex = 0; pipeIndex < nPipes; pipeIndex++)
