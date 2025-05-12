@@ -160,13 +160,20 @@ static std::vector<NnExecutorDevice> resolveDevices(AppCliArgs *args, NnNetConfi
 
 RootLlmInference::RootLlmInference(LlmNet *net, NnNetExecution *execution, NnExecutor *executor, NnNetwork *network) {
     this->header = net->header;
-    this->tokenPipe = (float *)execution->pipes[net->tokenPipeIndex];
-    this->positionPipe = (float *)execution->pipes[net->positionPipeIndex];
-    this->logitsPipe = (float *)execution->pipes[net->logitsPipeIndex];
     this->execution = execution;
     this->executor = executor;
-    this->network = network; // May be nullptr!
+    this->network = network;
+
+    if (header->syncType != F_Q80 && header->syncType != F_32) {
+        printf("❌ Invalid pipe type for float casting: %d\n", header->syncType);
+        throw std::runtime_error("Cannot safely cast pipes to float*");
+    }
+
+    this->tokenPipe = reinterpret_cast<float *>(execution->pipes[net->tokenPipeIndex]);
+    this->positionPipe = reinterpret_cast<float *>(execution->pipes[net->positionPipeIndex]);
+    this->logitsPipe = reinterpret_cast<float *>(execution->pipes[net->logitsPipeIndex]);
 }
+
 
 void RootLlmInference::setBatchSize(NnUint batchSize) {
     execution->setBatchSize(batchSize);
